@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AAMVA PDF417 Barcode Generator</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@500;700&display=swap');
+
+        @font-face {
+            font-family: 'Retrocide';
+            src: url('/Retrocide.woff2') format('woff2'),
+                 url('/Retrocide.otf') format('opentype'),
+                 url('/Retrocide.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+
+        :root {
+            --bg-primary: #04010f;
+            --bg-secondary: rgba(10, 8, 35, 0.85);
+            --panel-border: rgba(108, 99, 255, 0.4);
+            --text-primary: #f6f7ff;
+            --text-muted: rgba(198, 203, 255, 0.7);
+            --accent: #ff5470;
+            --accent-secondary: #2cb67d;
+            --accent-tertiary: #8c6cff;
+            --grid-color: rgba(98, 0, 234, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Retrocide', 'Share Tech Mono', 'SFMono-Regular', 'Courier New', monospace;
+            background: radial-gradient(circle at 20% 20%, rgba(255, 84, 112, 0.25), transparent 55%),
+                        radial-gradient(circle at 80% 0%, rgba(44, 182, 125, 0.25), transparent 45%),
+                        linear-gradient(135deg, #080322 0%, #130024 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 30px;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: linear-gradient(0deg, transparent 24%, var(--grid-color) 25%, var(--grid-color) 26%, transparent 27%),
+                              linear-gradient(90deg, transparent 24%, var(--grid-color) 25%, var(--grid-color) 26%, transparent 27%);
+            background-size: 90px 90px;
+            z-index: -2;
+            opacity: 0.6;
+        }
+
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: linear-gradient(0deg, rgba(20, 10, 46, 0.6), transparent 60%);
+            mix-blend-mode: screen;
+            z-index: -1;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(13, 9, 40, 0.9);
+            border: 1px solid var(--panel-border);
+            border-radius: 20px;
+            padding: 36px;
+            margin-bottom: 36px;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 0 45px rgba(108, 99, 255, 0.25);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(140, 108, 255, 0.2), transparent 60%);
+            pointer-events: none;
+        }
+
+        h1 {
+            font-family: 'Retrocide', 'Orbitron', 'Share Tech Mono', sans-serif;
+            font-size: 36px;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            color: var(--text-primary);
+            text-shadow: 0 0 18px rgba(108, 99, 255, 0.75);
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .subtitle {
+            font-size: 15px;
+            color: var(--text-muted);
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(44, 182, 125, 0.18);
+            color: var(--accent-secondary);
+            padding: 6px 14px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            border: 1px solid rgba(44, 182, 125, 0.45);
+            box-shadow: 0 0 12px rgba(44, 182, 125, 0.35);
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 360px;
+            gap: 32px;
+        }
+
+        @media (max-width: 1100px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+
+            .preview-panel {
+                position: static;
+            }
+        }
+
+        .panel {
+            background: var(--bg-secondary);
+            border-radius: 18px;
+            padding: 32px;
+            border: 1px solid var(--panel-border);
+            backdrop-filter: blur(22px);
+            box-shadow: 0 18px 50px rgba(5, 3, 42, 0.75);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .panel::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 15% 15%, rgba(255, 84, 112, 0.2), transparent 45%),
+                        radial-gradient(circle at 85% 20%, rgba(140, 108, 255, 0.2), transparent 55%);
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .form-panel {
+            position: relative;
+        }
+
+        .preview-panel {
+            position: sticky;
+            top: 30px;
+        }
+
+        h2 {
+            font-family: 'Retrocide', 'Orbitron', sans-serif;
+            font-size: 22px;
+            letter-spacing: 3px;
+            color: var(--accent-tertiary);
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-transform: uppercase;
+        }
+
+        h2::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(140, 108, 255, 0.0), rgba(140, 108, 255, 0.4));
+            margin-left: auto;
+        }
+
+        .section {
+            margin-bottom: 28px;
+            position: relative;
+        }
+
+        .section-title {
+            font-size: 12px;
+            color: var(--accent-secondary);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 18px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-title::before {
+            content: '▌';
+            color: var(--accent);
+            text-shadow: 0 0 12px rgba(255, 84, 112, 0.7);
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        label {
+            display: block;
+            color: var(--text-primary);
+            font-size: 13px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .required {
+            color: var(--accent);
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid rgba(140, 108, 255, 0.45);
+            border-radius: 12px;
+            font-size: 14px;
+            background: rgba(6, 9, 28, 0.75);
+            color: var(--text-primary);
+            transition: border-color 0.25s ease, box-shadow 0.25s ease;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 18px rgba(255, 84, 112, 0.35);
+        }
+
+        input::placeholder {
+            color: rgba(198, 203, 255, 0.4);
+        }
+
+        select {
+            appearance: none;
+            background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%),
+                              linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+            background-position: calc(100% - 18px) calc(50% - 4px), calc(100% - 12px) calc(50% + 5px);
+            background-size: 6px 6px;
+            background-repeat: no-repeat;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 18px;
+        }
+
+        button {
+            width: 100%;
+            padding: 16px 24px;
+            border-radius: 14px;
+            font-size: 15px;
+            letter-spacing: 1.8px;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            font-family: 'Orbitron', sans-serif;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, rgba(255, 84, 112, 0.9), rgba(140, 108, 255, 0.9));
+            border: 1px solid rgba(255, 84, 112, 0.6);
+            color: var(--text-primary);
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 0 24px rgba(255, 84, 112, 0.45);
+        }
+
+        .btn-primary::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.3) 50%, transparent 70%);
+            transform: translateX(-100%);
+            transition: transform 0.5s ease;
+        }
+
+        .btn-primary:hover::after {
+            transform: translateX(100%);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px) scale(1.01);
+            box-shadow: 0 0 28px rgba(255, 84, 112, 0.65);
+        }
+
+        .btn-primary:disabled {
+            background: rgba(255, 255, 255, 0.06);
+            color: rgba(255, 255, 255, 0.4);
+            border-color: rgba(255, 255, 255, 0.12);
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            margin-top: 12px;
+            background: rgba(8, 12, 38, 0.9);
+            border: 1px solid rgba(140, 108, 255, 0.5);
+            color: var(--accent-tertiary);
+            box-shadow: 0 0 18px rgba(140, 108, 255, 0.35);
+        }
+
+        .btn-secondary:hover {
+            transform: translateY(-2px);
+            background: rgba(16, 20, 48, 0.95);
+            box-shadow: 0 0 22px rgba(140, 108, 255, 0.55);
+        }
+
+        .btn-secondary:disabled {
+            opacity: 0.4;
+            box-shadow: none;
+            transform: none;
+        }
+
+        .barcode-preview {
+            background: rgba(7, 9, 30, 0.9);
+            border: 1px dashed rgba(140, 108, 255, 0.4);
+            border-radius: 14px;
+            padding: 24px;
+            text-align: center;
+            min-height: 220px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        .barcode-preview::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, rgba(255, 84, 112, 0.08), transparent);
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .barcode-preview img {
+            max-width: 100%;
+            height: auto;
+            filter: drop-shadow(0 0 16px rgba(140, 108, 255, 0.45));
+        }
+
+        .empty-state {
+            color: rgba(198, 203, 255, 0.6);
+            font-size: 13px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .info-box {
+            background: rgba(6, 9, 28, 0.8);
+            border: 1px solid rgba(44, 182, 125, 0.4);
+            color: var(--accent-secondary);
+            padding: 16px 20px;
+            border-radius: 12px;
+            font-size: 13px;
+            line-height: 1.6;
+            margin-bottom: 24px;
+            box-shadow: 0 0 18px rgba(44, 182, 125, 0.2);
+        }
+
+        .success-box,
+        .error-box {
+            padding: 16px 20px;
+            border-radius: 12px;
+            margin-top: 16px;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 1.4px;
+        }
+
+        .success-box {
+            background: rgba(32, 64, 48, 0.8);
+            border: 1px solid rgba(44, 182, 125, 0.5);
+            color: var(--accent-secondary);
+            box-shadow: 0 0 16px rgba(44, 182, 125, 0.35);
+        }
+
+        .error-box {
+            background: rgba(64, 18, 32, 0.85);
+            border: 1px solid rgba(255, 84, 112, 0.6);
+            color: var(--accent);
+            box-shadow: 0 0 16px rgba(255, 84, 112, 0.35);
+        }
+
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.08);
+            border-top: 3px solid var(--accent);
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 0.9s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 18px;
+        }
+
+        .stat {
+            background: rgba(8, 12, 38, 0.85);
+            padding: 14px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(140, 108, 255, 0.4);
+            text-align: center;
+            box-shadow: 0 0 18px rgba(140, 108, 255, 0.2);
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--accent-tertiary);
+            text-shadow: 0 0 12px rgba(140, 108, 255, 0.7);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            letter-spacing: 1.8px;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 20px;
+            }
+
+            .header {
+                padding: 28px;
+            }
+
+            .panel {
+                padding: 26px;
+            }
+
+            h1 {
+                font-size: 30px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                🎫 WA STATE LICENSE BARCODE GENERATOR
+            </h1>
+            <p class="subtitle" style="margin-left:70px;">Generate Flawless Washington State driver's license barcodes</p>
+        </div>
+
+        <div class="main-content">
+            <!-- Form Panel -->
+            <div class="form-panel panel">
+                <h2>📝 License Information</h2>
+                
+                <form id="licenseForm">
+                    <!-- Personal Information -->
+                    <div class="section">
+                        <div class="section-title">Personal Information</div>
+                        
+                        <div class="form-group">
+                            <label>License Number <span class="required">*</span></label>
+                            <input type="text" id="customer_id" placeholder="WDL123456789" required>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>First Name <span class="required">*</span></label>
+                                <input type="text" id="first_name" placeholder="JOHN" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Last Name <span class="required">*</span></label>
+                                <input type="text" id="last_name" placeholder="SMITH" required>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Middle Name</label>
+                            <input type="text" id="middle_name" placeholder="ROBERT">
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Birth Date <span class="required">*</span></label>
+                                <input type="date" id="birth_date" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Sex <span class="required">*</span></label>
+                                <select id="sex" required>
+                                    <option value="">Select...</option>
+                                    <option value="M">Male</option>
+                                    <option value="F">Female</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Physical Description -->
+                    <div class="section">
+                        <div class="section-title">Physical Description</div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Eye Color <span class="required">*</span></label>
+                                <select id="eye_color" required>
+                                    <option value="">Select...</option>
+                                    <option value="BLK">Black</option>
+                                    <option value="BLU">Blue</option>
+                                    <option value="BRO">Brown</option>
+                                    <option value="GRY">Gray</option>
+                                    <option value="GRN">Green</option>
+                                    <option value="HAZ">Hazel</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Hair Color</label>
+                                <select id="hair_color">
+                                    <option value="">Select...</option>
+                                    <option value="BAL">Bald</option>
+                                    <option value="BLK">Black</option>
+                                    <option value="BLN">Blond</option>
+                                    <option value="BRO">Brown</option>
+                                    <option value="GRY">Gray</option>
+                                    <option value="RED">Red</option>
+                                    <option value="WHI">White</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Height <span class="required">*</span></label>
+                                <input type="text" id="height" placeholder="5-10 or 70" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Weight (lbs)</label>
+                                <input type="text" id="weight" placeholder="180">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Address -->
+                    <div class="section">
+                        <div class="section-title">Address</div>
+                        
+                        <div class="form-group">
+                            <label>Street Address <span class="required">*</span></label>
+                            <input type="text" id="address_street" placeholder="123 MAIN ST" required>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>City <span class="required">*</span></label>
+                                <input type="text" id="address_city" placeholder="SEATTLE" required>
+                            </div>
+                            <div class="form-group">
+                                <label>State <span class="required">*</span></label>
+                                <input type="text" id="address_state" value="WA" required>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>ZIP Code <span class="required">*</span></label>
+                            <input type="text" id="address_zip" placeholder="98101" required>
+                        </div>
+                    </div>
+
+                    <!-- License Details -->
+                    <div class="section">
+                        <div class="section-title">License Details</div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Class</label>
+                                <input type="text" id="class" placeholder="C" maxlength="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Restrictions</label>
+                                <input type="text" id="restrictions" placeholder="B or NONE">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Endorsements</label>
+                            <input type="text" id="endorsements" placeholder="NONE">
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Issue Date <span class="required">*</span></label>
+                                <input type="date" id="issue_date" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Expiration Date <span class="required">*</span></label>
+                                <input type="date" id="expiration_date" required>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Document Discriminator <span class="required">*</span></label>
+                            <input type="text" id="document_discriminator" placeholder="12345678901234567890" required>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn-primary" id="generateBtn">
+                        <span>🎯 Generate Barcode</span>
+                    </button>
+                </form>
+
+                <div id="message"></div>
+            </div>
+
+            <!-- Preview Panel -->
+            <div class="preview-panel panel">
+                <h2>👁️ Preview</h2>
+                
+                <div class="info-box">
+                    📊 Configuration: 15 data columns, 17 rows<br>
+                    ✅ AAMVA Version 9 (2016)<br>
+                    🏷️ Jurisdiction: 636045 (WA)
+                </div>
+
+                <div class="barcode-preview" id="barcodePreview">
+                    <div class="empty-state">
+                        Barcode will appear here after generation
+                    </div>
+                </div>
+
+                <button class="btn-secondary" id="downloadBtn" disabled>
+                    💾 Download PNG
+                </button>
+
+                <div class="stats" id="stats" style="display: none;">
+                    <div class="stat">
+                        <div class="stat-value" id="dataSize">-</div>
+                        <div class="stat-label">Data Size</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value">15</div>
+                        <div class="stat-label">Columns</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentBarcodeImage = null;
+        let currentFormData = null;
+
+        const form = document.getElementById('licenseForm');
+        const generateBtn = document.getElementById('generateBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const barcodePreview = document.getElementById('barcodePreview');
+        const message = document.getElementById('message');
+        const stats = document.getElementById('stats');
+
+        // Set default dates
+        const today = new Date();
+        const fiveYearsFromNow = new Date();
+        fiveYearsFromNow.setFullYear(today.getFullYear() + 5);
+        
+        document.getElementById('issue_date').valueAsDate = today;
+        document.getElementById('expiration_date').valueAsDate = fiveYearsFromNow;
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await generateBarcode();
+        });
+
+        downloadBtn.addEventListener('click', async () => {
+            if (currentFormData) {
+                await downloadBarcode();
+            }
+        });
+
+        async function generateBarcode() {
+            const formData = getFormData();
+            currentFormData = formData;
+
+            // Show loading
+            generateBtn.disabled = true;
+            generateBtn.innerHTML = '<div class="spinner"></div><span>Generating...</span>';
+            message.innerHTML = '';
+            
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    // Display barcode
+                    currentBarcodeImage = result.image;
+                    barcodePreview.innerHTML = `<img src="${result.image}" alt="Generated Barcode">`;
+                    
+                    // Enable download
+                    downloadBtn.disabled = false;
+                    
+                    // Show stats
+                    stats.style.display = 'grid';
+                    document.getElementById('dataSize').textContent = result.data_length + ' B';
+                    
+                    // Show success message
+                    message.innerHTML = `
+                        <div class="success-box">
+                            ✅ Barcode generated successfully! (${result.data_length} bytes)
+                        </div>
+                    `;
+                } else {
+                    throw new Error(result.error || 'Generation failed');
+                }
+            } catch (error) {
+                message.innerHTML = `
+                    <div class="error-box">
+                        ❌ Error: ${error.message}
+                    </div>
+                `;
+                barcodePreview.innerHTML = '<div class="empty-state">Generation failed</div>';
+                downloadBtn.disabled = true;
+            } finally {
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<span>🎯 Generate Barcode</span>';
+            }
+        }
+
+        async function downloadBarcode() {
+            if (!currentFormData) return;
+
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(currentFormData)
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${currentFormData.customer_id}_barcode.png`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                    
+                    message.innerHTML = `
+                        <div class="success-box">
+                            ✅ Barcode downloaded successfully!
+                        </div>
+                    `;
+                } else {
+                    throw new Error('Download failed');
+                }
+            } catch (error) {
+                message.innerHTML = `
+                    <div class="error-box">
+                        ❌ Download failed: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function getFormData() {
+            const fields = [
+                'customer_id', 'first_name', 'last_name', 'middle_name',
+                'birth_date', 'sex', 'eye_color', 'hair_color',
+                'height', 'weight', 'address_street', 'address_city',
+                'address_state', 'address_zip', 'class', 'restrictions',
+                'endorsements', 'issue_date', 'expiration_date',
+                'document_discriminator'
+            ];
+
+            const data = {};
+            fields.forEach(field => {
+                const value = document.getElementById(field).value.trim();
+                if (value) {
+                    data[field] = value;
+                }
+            });
+
+            return data;
+        }
+    </script>
+</body>
+</html>

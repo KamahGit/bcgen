@@ -1,0 +1,18 @@
+# Required for PDF417 barcode generation
+# Required for generation
+pdf417
+Pillow
+
+# Optional for decoding
+zxing-cpp
+numpy
+
+# Web application
+Flask
+flask-cors
+
+# Optional: For additional image processing
+# opencv-python>=4.8.0
+
+# Optional: For testing
+pytest>=7.4.0
