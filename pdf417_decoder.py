@@ -101,6 +101,7 @@ class PDF417Decoder:
             Dictionary of parsed fields, or None if decoding failed
         """
         data = self.decode_from_image(image_path)
+        print("raw data:", repr(data))
         if data:
             return self.parse_aamva_data(data)
         return None
@@ -137,7 +138,7 @@ if __name__ == "__main__":
     print()
     
     fields = decode_barcode(image_path)
-    
+    print('raw fields:', fields)
     if fields:
         print("Successfully decoded!")
         print()

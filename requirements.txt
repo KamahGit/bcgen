@@ -16,3 +16,9 @@ flask-cors
 
 # Optional: For testing
 pytest>=7.4.0
+
+# Required for YAML support
+pyyaml
+
+# For packaging the application
+pyinstaller

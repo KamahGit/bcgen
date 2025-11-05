@@ -9,6 +9,7 @@ import io
 import base64
 from datetime import datetime
 import os
+import re
 
 from aamva_pdf417 import create_wa_license_barcode
 from pdf417_encoder import PDF417Encoder
@@ -18,6 +19,66 @@ CORS(app)  # Enable CORS for frontend
 
 # Configure Flask
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+
+
+def normalize_license_data(data: dict) -> dict:
+    """Normalize incoming data to meet WA formatting expectations."""
+    if not isinstance(data, dict):
+        return {}
+
+    uppercase_fields = {
+        'customer_id', 'last_name', 'first_name', 'middle_name', 'suffix',
+        'address_street', 'address_city', 'address_state', 'document_discriminator',
+        'eye_color', 'hair_color', 'class', 'restrictions', 'endorsements',
+        'country_id', 'sex', 'jurisdiction_endorsement_code',
+        'jurisdiction_endorsement_expiration', 'jurisdiction_restriction_code',
+        'compliance_type', 'jurisdiction_version'
+    }
+
+    for field, value in list(data.items()):
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if field in uppercase_fields:
+                trimmed = trimmed.upper()
+            data[field] = trimmed
+
+    # Normalize height (allow formats like 5'10" or 70)
+    if isinstance(data.get('height'), str):
+        height = data['height'].upper()
+        height = height.replace('FEET', '').replace('FT', '').replace('INCHES', '').replace('IN', '')
+        height = height.replace("'", '-').replace('"', '').replace(' ', '')
+        if '-' in height:
+            parts = [p for p in height.split('-') if p]
+            if len(parts) == 2 and all(part.isdigit() for part in parts):
+                height = f"{int(parts[0])}-{int(parts[1])}"
+        data['height'] = height
+
+    # Normalize weight fields to digits only
+    for weight_field in ('weight_pounds', 'weight'):
+        if isinstance(data.get(weight_field), str):
+            digits = re.sub(r'[^0-9]', '', data[weight_field])
+            if digits:
+                data[weight_field] = digits
+            else:
+                data.pop(weight_field, None)
+
+    defaults = {
+        'country_id': 'USA',
+        'class': 'NONE',
+        'restrictions': 'NONE',
+        'endorsements': 'NONE',
+        'compliance_type': 'N',
+        'jurisdiction_endorsement_code': 'N',
+        'jurisdiction_endorsement_expiration': 'N',
+        'jurisdiction_restriction_code': 'N',
+        'jurisdiction_version': '00'
+    }
+
+    for key, value in defaults.items():
+        if not data.get(key):
+            data[key] = value
+
+    return data
 
 
 @app.route('/')
@@ -43,6 +104,8 @@ def generate_barcode():
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
+        data = normalize_license_data(dict(data))
+
         # Validate required fields
         required_fields = [
             'customer_id', 'last_name', 'first_name', 'birth_date',
@@ -63,7 +126,7 @@ def generate_barcode():
         
         # Encode to PDF417 image
         encoder = PDF417Encoder()
-        image = encoder.encode_to_image(barcode_data)
+        image = encoder.encode_to_image(barcode_data, width=3430, height=603)
         
         # Save to buffer
         img_buffer = io.BytesIO()
@@ -102,13 +165,15 @@ def download_barcode():
         
         if not data:
             return jsonify({'error': 'No data provided'}), 400
+
+        data = normalize_license_data(dict(data))
         
         # Generate barcode data
         barcode_data = create_wa_license_barcode(data)
         
         # Encode to PDF417 image
         encoder = PDF417Encoder()
-        image = encoder.encode_to_image(barcode_data)
+        image = encoder.encode_to_image(barcode_data, width=3430, height=603)
         
         # Save to buffer
         img_buffer = io.BytesIO()
@@ -149,6 +214,8 @@ def validate_data():
         
         if not data:
             return jsonify({'error': 'No data provided'}), 400
+
+        data = normalize_license_data(dict(data))
         
         # Required fields
         required_fields = [

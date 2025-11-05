@@ -21,7 +21,6 @@ class AAMVADataFormatter:
         'customer_id': 'DAQ',
         'last_name': 'DCS',
         'first_name': 'DAC',
-        'middle_name': 'DAD',
         'expiration_date': 'DBA',
         'birth_date': 'DBB',
         'sex': 'DBC',
@@ -39,6 +38,7 @@ class AAMVADataFormatter:
         
         # Optional elements
         'weight_range': 'DCE',
+        'middle_name': 'DAD',
         'hair_color': 'DAZ',
         'place_of_birth': 'DCI',
         'audit_information': 'DCK',
@@ -136,6 +136,35 @@ class AAMVADataFormatter:
         """Truncate name if exceeds maximum length."""
         return name[:max_length] if len(name) > max_length else name
 
+    @staticmethod
+    def format_zip(zip_code: str) -> str:
+        """
+        Format ZIP code to AAMVA standard (11 characters, digits plus padding).
+        Accepts 5 or 9 digit ZIP (with or without separators).
+        """
+        digits = re.sub(r'\D', '', zip_code or '')
+        if len(digits) < 5:
+            raise ValueError(f"Invalid ZIP code: {zip_code}")
+
+        base = digits[:5]
+        extension = digits[5:9]
+        formatted = base + extension
+        return formatted.ljust(11)
+
+    @staticmethod
+    def format_weight(weight_value: Optional[str]) -> Optional[str]:
+        """Format weight in pounds as a three-digit numeric string without units."""
+        if not weight_value:
+            return None
+
+        try:
+            digits = re.sub(r'[^0-9]', '', str(weight_value))
+            if not digits:
+                return None
+            return str(int(digits))
+        except ValueError as exc:
+            raise ValueError(f"Invalid weight: {weight_value}") from exc
+
 
 class AAMVAPDF417Generator:
     """
@@ -156,47 +185,25 @@ class AAMVAPDF417Generator:
         Returns:
             Formatted string ready for PDF417 encoding
         """
-        # Line feed as record separator
         LF = "\n"
-        
-        # Build subfile data first to calculate length
         subfile_data = self._build_subfile_data(license_data, LF)
-        
-        # Start with compliance indicator
-        barcode_data = "@"
-        
-        # Add line feed
-        barcode_data += LF
-        
-        # Add ANSI header (note: there's a space after ANSI)
+        barcode_data = "@" + LF
+        barcode_data += "\x1e\r"
         barcode_data += "ANSI "
-        
-        # Add jurisdiction code (IIN - Issuer Identification Number)
-        jurisdiction_code = license_data.get('jurisdiction_code', 
-                                             self.formatter.WA_JURISDICTION_CODE)
+        jurisdiction_code = license_data.get('jurisdiction_code', self.formatter.WA_JURISDICTION_CODE)
         barcode_data += jurisdiction_code
-        
-        # Add AAMVA version number (2 digits)
         barcode_data += self.formatter.AAMVA_VERSION
-        
-        # Add number of subfiles (typically 01 for DL/ID)
-        barcode_data += "01"
-        
-        # Subfile designator for DL/ID card (2 chars)
+        jurisdiction_version = license_data.get('jurisdiction_version', '00')
+        barcode_data += jurisdiction_version.zfill(2)
+        barcode_data += f"{1:02d}"
         barcode_data += "DL"
-        
-        # Calculate offset: from start of file to where subfile data begins
-        # Current length + 4 (offset) + 4 (length) = position where data starts
         offset = len(barcode_data) + 8
         barcode_data += f"{offset:04d}"
-        
-        # Add subfile length (4 decimal digits)
         length = len(subfile_data)
         barcode_data += f"{length:04d}"
-        
-        # Add the subfile data
         barcode_data += subfile_data
-        
+        # End with carriage return (no trailing LF)
+        barcode_data = barcode_data.rstrip("\n") + "\r"
         return barcode_data
     
     def _build_subfile_data(self, license_data: Dict, LF: str) -> str:
@@ -210,143 +217,146 @@ class AAMVAPDF417Generator:
         Returns:
             Formatted subfile data string
         """
-        # Start subfile data with line feed
-        subfile_data = LF
-        
-        # Add mandatory data elements in recommended order
-        # Customer ID Number (license number) - DAQ
-        subfile_data += self._build_data_element('DAQ', 
-                                                  license_data['customer_id'])
-        
-        # Family Name (Last Name) - DCS
-        subfile_data += LF + self._build_data_element('DCS', 
-                                                       license_data['last_name'])
-        
-        # Given Name (First Name) - DAC
-        subfile_data += LF + self._build_data_element('DAC', 
-                                                       license_data['first_name'])
-        
-        # Middle Name (optional) - DAD
-        if 'middle_name' in license_data and license_data['middle_name']:
-            subfile_data += LF + self._build_data_element('DAD', 
-                                                           license_data['middle_name'])
-        
-        # Date of Birth - DBB
-        subfile_data += LF + self._build_data_element('DBB', 
-            self.formatter.format_date(license_data['birth_date']))
-        
+        lines = []
+
+        def clean(value: Optional[str]) -> Optional[str]:
+            if value is None:
+                return None
+            return str(value).strip().upper()
+
+        def add_line(element_id: str, value: Optional[str], prefix: str = "") -> None:
+            if value is None or value == "":
+                return
+            element = self._build_data_element(element_id, value)
+            if prefix:
+                element = prefix + element
+            lines.append(element)
+
+        # Jurisdiction-specific class/restrictions/endorsements (with defaults)
+        license_class = clean(license_data.get('class')) or 'NONE'
+        add_line('DCA', license_class, prefix='DL')
+
+        restrictions = clean(license_data.get('restrictions')) or 'NONE'
+        add_line('DCB', restrictions)
+
+        endorsements = clean(license_data.get('endorsements')) or 'NONE'
+        add_line('DCD', endorsements)
+
+        # Expiration Date - DBA
+        add_line('DBA', self.formatter.format_date(license_data['expiration_date']))
+
+        # Names
+        last_name = clean(license_data.get('last_name'))
+        first_name = clean(license_data.get('first_name'))
+        add_line('DCS', last_name)
+        add_line('DAC', first_name)
+
+        if license_data.get('middle_name'):
+            middle_name = clean(license_data['middle_name'])
+            add_line('DAD', middle_name)
+        else:
+            middle_name = None
+
+        # Truncated names if needed
+        if last_name and len(last_name) > 35:
+            add_line('DCL', self.formatter.truncate_name(last_name))
+        if first_name and len(first_name) > 35:
+            add_line('DCM', self.formatter.truncate_name(first_name))
+        if license_data.get('suffix'):
+            add_line('DCU', clean(license_data['suffix']))
+
+        # Issue Date and Birth Date
+        issue_date = license_data.get('issue_date')
+        if issue_date:
+            add_line('DBD', self.formatter.format_date(issue_date))
+
+        add_line('DBB', self.formatter.format_date(license_data['birth_date']))
+
         # Sex - DBC
         sex_code = self.formatter.SEX_CODES.get(
-            license_data.get('sex', 'U').upper(), '9')
-        subfile_data += LF + self._build_data_element('DBC', sex_code)
-        
+            (license_data.get('sex') or 'U').upper(), '9'
+        )
+        add_line('DBC', sex_code)
+
         # Eye Color - DAY
-        eye_color = license_data.get('eye_color', 'UNK').upper()
-        subfile_data += LF + self._build_data_element('DAY', eye_color)
-        
+        eye_code_input = clean(license_data.get('eye_color')) or 'UNK'
+        eye_code = self.formatter.EYE_COLOR_CODES.get(eye_code_input, eye_code_input)
+        add_line('DAY', eye_code)
+
+        hair_code_input = clean(license_data.get('hair_color'))
+        if hair_code_input:
+            hair_code = self.formatter.HAIR_COLOR_CODES.get(hair_code_input, hair_code_input)
+            add_line('DAZ', hair_code)
+
         # Height - DAU
         height = self.formatter.format_height(license_data['height'])
-        subfile_data += LF + self._build_data_element('DAU', height)
-        
-        # Street Address - DAG
-        subfile_data += LF + self._build_data_element('DAG', 
-                                                       license_data['address_street'])
-        
-        # City - DAI
-        subfile_data += LF + self._build_data_element('DAI', 
-                                                       license_data['address_city'])
-        
-        # State - DAJ
-        subfile_data += LF + self._build_data_element('DAJ', 
-                                                       license_data['address_state'])
-        
-        # Postal Code - DAK
-        subfile_data += LF + self._build_data_element('DAK', 
-                                                       license_data['address_zip'])
-        
-        # Country Identification - DCG
-        country = license_data.get('country_id', 'USA')
-        subfile_data += LF + self._build_data_element('DCG', country)
-        
+        add_line('DAU', height)
+
+        # Address details
+        add_line('DAG', clean(license_data.get('address_street')))
+        add_line('DAI', clean(license_data.get('address_city')))
+        add_line('DAJ', clean(license_data.get('address_state')))
+        add_line('DAK', self.formatter.format_zip(license_data['address_zip']))
+
+        # Customer ID - DAQ
+        add_line('DAQ', clean(license_data.get('customer_id')))
+
         # Document Discriminator - DCF
-        subfile_data += LF + self._build_data_element('DCF', 
-                                                       license_data['document_discriminator'])
-        
-        # Expiration Date - DBA
-        subfile_data += LF + self._build_data_element('DBA', 
-            self.formatter.format_date(license_data['expiration_date']))
-        
-        # Issue Date (optional but common) - DBD
-        if 'issue_date' in license_data:
-            subfile_data += LF + self._build_data_element('DBD', 
-                self.formatter.format_date(license_data['issue_date']))
-        
-        # Jurisdiction-specific vehicle class - DCA
-        if 'class' in license_data:
-            subfile_data += LF + self._build_data_element('DCA', 
-                                                           license_data['class'])
-        
-        # Jurisdiction-specific restriction codes - DCB
-        if 'restrictions' in license_data:
-            subfile_data += LF + self._build_data_element('DCB', 
-                                                           license_data['restrictions'])
-        
-        # Jurisdiction-specific endorsement codes - DCD
-        if 'endorsements' in license_data:
-            subfile_data += LF + self._build_data_element('DCD', 
-                                                           license_data['endorsements'])
-        
-        # Family name truncated - DCL (only if different from DCS)
-        family_name = self.formatter.truncate_name(license_data['last_name'])
-        if len(license_data['last_name']) > 35:
-            subfile_data += LF + self._build_data_element('DCL', family_name)
-        
-        # Given name truncated - DCM (only if different from DAC)
-        given_name = self.formatter.truncate_name(license_data['first_name'])
-        if len(license_data['first_name']) > 35:
-            subfile_data += LF + self._build_data_element('DCM', given_name)
-        
-        # Name Suffix - DCU
-        if 'suffix' in license_data and license_data['suffix']:
-            subfile_data += LF + self._build_data_element('DCU', 
-                                                           license_data['suffix'])
-        
-        # Hair Color - DAZ
-        if 'hair_color' in license_data:
-            hair_color = license_data['hair_color'].upper()
-            subfile_data += LF + self._build_data_element('DAZ', hair_color)
-        
+        document_discriminator = clean(license_data.get('document_discriminator'))
+        add_line('DCF', document_discriminator)
+
+        # Country Identification - DCG
+        country = clean(license_data.get('country_id')) or 'USA'
+        add_line('DCG', country)
+
+        # Jurisdiction-specific compliance flags (defaults to 'N')
+        dde = clean(license_data.get('jurisdiction_endorsement_expiration')) or 'N'
+        ddf = clean(license_data.get('jurisdiction_endorsement_code')) or 'N'
+        ddg = clean(license_data.get('jurisdiction_restriction_code')) or 'N'
+        add_line('DDE', dde)
+        add_line('DDF', ddf)
+        add_line('DDG', ddg)
+
+        # Jurisdiction-specific identifier (DCJ)
+        dcj_value = clean(license_data.get('inventory_control'))
+        if not dcj_value and document_discriminator:
+            # Split document_discriminator at license number, use the part after as DCJ
+            # Assume format: <license_number><audit_code>
+            license_number = clean(license_data.get('customer_id'))
+            if license_number and document_discriminator.startswith(license_number):
+                dcj_value = document_discriminator[len(license_number):]
+            else:
+                dcj_value = document_discriminator
+        add_line('DCJ', dcj_value)
+
+        # Compliance type - DDA (default 'N')
+        compliance_type = clean(license_data.get('compliance_type')) or 'N'
+        add_line('DDA', compliance_type)
+
+        # Card revision date - DDB (default WA baseline 2019-11-12)
+        card_revision_raw = license_data.get('card_revision_date', '2019-11-12')
+        add_line('DDB', self.formatter.format_date(card_revision_raw))
+
         # Weight (pounds) - DAW
-        if 'weight_pounds' in license_data:
-            weight = f"{int(license_data['weight_pounds']):03d} lb"
-            subfile_data += LF + self._build_data_element('DAW', weight)
-        
-        # Compliance Type - DDA
-        if 'compliance_type' in license_data:
-            subfile_data += LF + self._build_data_element('DDA', 
-                                                           license_data['compliance_type'])
-        
-        # Card Revision Date - DDB
-        if 'card_revision_date' in license_data:
-            subfile_data += LF + self._build_data_element('DDB', 
-                self.formatter.format_date(license_data['card_revision_date']))
-        
-        # Under 21 Until - DDJ
-        if 'under_21_until' in license_data:
-            subfile_data += LF + self._build_data_element('DDJ', 
-                self.formatter.format_date(license_data['under_21_until']))
-        
-        # Organ Donor - DDK
+        weight_value = self.formatter.format_weight(
+            license_data.get('weight_pounds') or license_data.get('weight')
+        )
+        if weight_value:
+            add_line('DAW', weight_value)
+
+        if license_data.get('under_21_until'):
+            add_line('DDJ', self.formatter.format_date(license_data['under_21_until']))
+
         if 'organ_donor' in license_data:
-            donor_code = '1' if license_data['organ_donor'] else '0'
-            subfile_data += LF + self._build_data_element('DDK', donor_code)
-        
-        # Veteran - DDL
+            donor_code = '1' if license_data.get('organ_donor') else '0'
+            add_line('DDK', donor_code)
+
         if 'veteran' in license_data:
             veteran_code = '1' if license_data['veteran'] else '0'
-            subfile_data += LF + self._build_data_element('DDL', veteran_code)
-        
-        return subfile_data
+            add_line('DDL', veteran_code)
+
+        # Assemble without leading separator so subfile data begins immediately after header
+        return LF.join(lines) + LF
     
     def _build_data_element(self, element_id: str, value: str) -> str:
         """Build a data element in AAMVA format."""

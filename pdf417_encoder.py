@@ -38,7 +38,7 @@ class PDF417Encoder:
         self.security_level = security_level
         self.columns = columns
     
-    def encode_to_image(self, data: str, scale: int = 3, ratio: int = 3) -> Image:
+    def encode_to_image(self, data: str, scale: int = 3, ratio: int = 3, width: int = None, height: int = None) -> Image:
         """
         Encode data to PDF417 barcode image.
         
@@ -46,6 +46,8 @@ class PDF417Encoder:
             data: The AAMVA-formatted barcode data string
             scale: Pixel scale factor (default 3)
             ratio: Height to width ratio of bars (default 3)
+            width: Target width in pixels. If provided, image is resized.
+            height: Target height in pixels. If provided, image is resized.
             
         Returns:
             PIL Image object containing the barcode
@@ -54,21 +56,30 @@ class PDF417Encoder:
             raise ImportError("Pillow library is required. Install with: pip install Pillow")
         
         # Encode the data to PDF417
-        # Column count: AAMVA recommends 6-10 columns, but states vary widely
-        # Washington State: configure 13 cols = 15 visible data columns (verified from actual)
-        # More columns = wider but shorter barcode
-        # Fewer columns = narrower but taller barcode
         codes = encode(data, 
-                      columns=self.columns,  # WA: 13 configured = 15 visible
+                      columns=self.columns,
                       security_level=self.security_level)
         
         # Render to image
         image = render_image(codes, scale=scale, ratio=ratio, padding=10)
+
+        # Resize image if width and height are provided
+        if width and height:
+            try:
+                # For Pillow >= 9.1.0
+                from PIL.Image import Resampling
+                image = image.resize((width, height), Resampling.LANCZOS)
+            except ImportError:
+                # For older Pillow
+                image = image.resize((width, height), Image.LANCZOS)
         
+        # Horizontally flip the image
+        image = image.transpose(Image.FLIP_LEFT_RIGHT)
+
         return image
     
     def save_barcode(self, data: str, output_path: str, 
-                     scale: int = 3, ratio: int = 3) -> None:
+                     scale: int = 3, ratio: int = 3, width: int = None, height: int = None) -> None:
         """
         Generate and save PDF417 barcode to file.
         
@@ -77,8 +88,10 @@ class PDF417Encoder:
             output_path: Path where to save the image
             scale: Pixel scale factor
             ratio: Height to width ratio of bars
+            width: Target width in pixels.
+            height: Target height in pixels.
         """
-        image = self.encode_to_image(data, scale, ratio)
+        image = self.encode_to_image(data, scale, ratio, width, height)
         image.save(output_path)
         print(f"Barcode saved to: {output_path}")
     
