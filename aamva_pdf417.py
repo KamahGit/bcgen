@@ -1,12 +1,26 @@
 """
 AAMVA PDF417 Barcode Generator
 Compliant with AAMVA DL/ID Card Design Standard
-Specifically configured for Washington State Driver's Licenses
+Multi-jurisdiction (all 50 US states + DC) — v2.0.0-alpha.1
+
+State-specific behavior (DL element order, jurisdiction subfiles like ZM/ZW,
+PDF417 rows/columns, WA-only horizontal flip) is driven by JurisdictionProfile
+objects in the `states` package.  The generator itself is state-agnostic.
 """
 
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import re
+
+from states import (
+    ELEMENT_DELIMITER,
+    SUBFILE_DELIMITER,
+    JurisdictionProfile,
+    SubFileSpec,
+    get_profile,
+)
+
+VERSION = "2.0.0-alpha.1"
 
 
 class AAMVADataFormatter:
@@ -169,203 +183,61 @@ class AAMVADataFormatter:
 class AAMVAPDF417Generator:
     """
     Generates AAMVA-compliant PDF417 barcode data for driver's licenses.
-    Specifically configured for Washington State.
+    State-agnostic: every jurisdiction-specific decision is taken from the
+    profile passed in (or resolved from license_data['state']).
     """
-    
-    def __init__(self):
+
+    def __init__(self, profile: Optional[JurisdictionProfile] = None):
         self.formatter = AAMVADataFormatter()
-    
+        self.profile = profile
+
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
     def generate_barcode_data(self, license_data: Dict) -> str:
         """
-        Generate the complete barcode data string.
-        
-        Args:
-            license_data: Dictionary containing all license information
-            
-        Returns:
-            Formatted string ready for PDF417 encoding
+        Generate the complete barcode data string for the license's state.
+
+        Layout produced (matches real-world dumps, e.g. Michigan):
+          @<LF>\x1eCR ANSI <iin><ver><jver><nc>#<typeID><offset><len>... \
+          <subfile1 data><CR><subfile2 data>...<CR>
+        Offsets/lengths for every subfile are computed AFTER the subfiles are
+        built, then the ANSI header is assembled with those values.
         """
-        LF = "\n"
-        subfile_data = self._build_subfile_data(license_data, LF)
-        barcode_data = "@" + LF
-        barcode_data += "\x1e\r"
-        barcode_data += "ANSI "
-        jurisdiction_code = license_data.get('jurisdiction_code', self.formatter.WA_JURISDICTION_CODE)
-        barcode_data += jurisdiction_code
-        barcode_data += self.formatter.AAMVA_VERSION
-        jurisdiction_version = license_data.get('jurisdiction_version', '00')
-        barcode_data += jurisdiction_version.zfill(2)
-        barcode_data += f"{1:02d}"
-        barcode_data += "DL"
-        offset = len(barcode_data) + 8
-        barcode_data += f"{offset:04d}"
-        length = len(subfile_data)
-        barcode_data += f"{length:04d}"
-        barcode_data += subfile_data
+        profile = self._resolve_profile(license_data)
+
+        # 1. Build each subfile body ("DL..." prefix + LF-separated elements).
+        bodies = [self._build_subfile_body(profile, sf, license_data)
+                  for sf in profile.subfiles]
+        combined = SUBFILE_DELIMITER.join(bodies) + ELEMENT_DELIMITER
+
+        # 2. Fixed-width header portion: "ANSI " + iin(6)+ver(2)+jver(2)+count(2)
+        header_prefix = "ANSI " + profile.iin + profile.aamva_version + \
+            license_data.get('jurisdiction_version', profile.jurisdiction_version).zfill(2) + \
+            f"{len(profile.subfiles):02d}"
+
+        # 3. Compute offsets/lengths iteratively (each descriptor is exactly
+        #    8 chars: 4-digit offset + 4-digit length).  Offsets are measured
+        #    from the start of the ANSI line (verified against real MI/WA dumps).
+        descriptors = []
+        running_offset = len(header_prefix) + 8 * len(profile.subfiles)
+        for sf, body in zip(profile.subfiles, bodies):
+            descriptors.append((sf.type_id, running_offset, len(body)))
+            running_offset += len(body) + 1   # +1 for the CR delimiter
+
+        header = header_prefix
+        for type_id, offset, length in descriptors:
+            header += f"{type_id}{offset:04d}{length:04d}"
+
+        barcode_data = "@" + ELEMENT_DELIMITER + "\x1e" + header + combined
         # End with carriage return (no trailing LF)
-        barcode_data = barcode_data.rstrip("\n") + "\r"
+        barcode_data = barcode_data.rstrip(ELEMENT_DELIMITER) + "\r"
         return barcode_data
-    
-    def _build_subfile_data(self, license_data: Dict, LF: str) -> str:
+
+    def validate_data(self, license_data: Dict) -> tuple:
         """
-        Build the subfile data section with all data elements.
-        
-        Args:
-            license_data: Dictionary containing all license information
-            LF: Line feed character
-            
-        Returns:
-            Formatted subfile data string
-        """
-        lines = []
+        Validate that all required fields are present for the license's state.
 
-        def clean(value: Optional[str]) -> Optional[str]:
-            if value is None:
-                return None
-            return str(value).strip().upper()
-
-        def add_line(element_id: str, value: Optional[str], prefix: str = "") -> None:
-            if value is None or value == "":
-                return
-            element = self._build_data_element(element_id, value)
-            if prefix:
-                element = prefix + element
-            lines.append(element)
-
-        # Jurisdiction-specific class/restrictions/endorsements (with defaults)
-        license_class = clean(license_data.get('class')) or 'NONE'
-        add_line('DCA', license_class, prefix='DL')
-
-        restrictions = clean(license_data.get('restrictions')) or 'NONE'
-        add_line('DCB', restrictions)
-
-        endorsements = clean(license_data.get('endorsements')) or 'NONE'
-        add_line('DCD', endorsements)
-
-        # Expiration Date - DBA
-        add_line('DBA', self.formatter.format_date(license_data['expiration_date']))
-
-        # Names
-        last_name = clean(license_data.get('last_name'))
-        first_name = clean(license_data.get('first_name'))
-        add_line('DCS', last_name)
-        add_line('DAC', first_name)
-
-        if license_data.get('middle_name'):
-            middle_name = clean(license_data['middle_name'])
-            add_line('DAD', middle_name)
-        else:
-            middle_name = None
-
-        # Truncated names if needed
-        if last_name and len(last_name) > 35:
-            add_line('DCL', self.formatter.truncate_name(last_name))
-        if first_name and len(first_name) > 35:
-            add_line('DCM', self.formatter.truncate_name(first_name))
-        if license_data.get('suffix'):
-            add_line('DCU', clean(license_data['suffix']))
-
-        # Issue Date and Birth Date
-        issue_date = license_data.get('issue_date')
-        if issue_date:
-            add_line('DBD', self.formatter.format_date(issue_date))
-
-        add_line('DBB', self.formatter.format_date(license_data['birth_date']))
-
-        # Sex - DBC
-        sex_code = self.formatter.SEX_CODES.get(
-            (license_data.get('sex') or 'U').upper(), '9'
-        )
-        add_line('DBC', sex_code)
-
-        # Eye Color - DAY
-        eye_code_input = clean(license_data.get('eye_color')) or 'UNK'
-        eye_code = self.formatter.EYE_COLOR_CODES.get(eye_code_input, eye_code_input)
-        add_line('DAY', eye_code)
-
-        hair_code_input = clean(license_data.get('hair_color'))
-        if hair_code_input:
-            hair_code = self.formatter.HAIR_COLOR_CODES.get(hair_code_input, hair_code_input)
-            add_line('DAZ', hair_code)
-
-        # Height - DAU
-        height = self.formatter.format_height(license_data['height'])
-        add_line('DAU', height)
-
-        # Address details
-        add_line('DAG', clean(license_data.get('address_street')))
-        add_line('DAI', clean(license_data.get('address_city')))
-        add_line('DAJ', clean(license_data.get('address_state')))
-        add_line('DAK', self.formatter.format_zip(license_data['address_zip']))
-
-        # Customer ID - DAQ
-        add_line('DAQ', clean(license_data.get('customer_id')))
-
-        # Document Discriminator - DCF
-        document_discriminator = clean(license_data.get('document_discriminator'))
-        add_line('DCF', document_discriminator)
-
-        # Country Identification - DCG
-        country = clean(license_data.get('country_id')) or 'USA'
-        add_line('DCG', country)
-
-        # Jurisdiction-specific compliance flags (defaults to 'N')
-        dde = clean(license_data.get('jurisdiction_endorsement_expiration')) or 'N'
-        ddf = clean(license_data.get('jurisdiction_endorsement_code')) or 'N'
-        ddg = clean(license_data.get('jurisdiction_restriction_code')) or 'N'
-        add_line('DDE', dde)
-        add_line('DDF', ddf)
-        add_line('DDG', ddg)
-
-        # Jurisdiction-specific identifier (DCJ)
-        dcj_value = clean(license_data.get('inventory_control'))
-        if not dcj_value and document_discriminator:
-            # Split document_discriminator at license number, use the part after as DCJ
-            # Assume format: <license_number><audit_code>
-            license_number = clean(license_data.get('customer_id'))
-            if license_number and document_discriminator.startswith(license_number):
-                dcj_value = document_discriminator[len(license_number):]
-            else:
-                dcj_value = document_discriminator
-        add_line('DCJ', dcj_value)
-
-        # Compliance type - DDA (default 'N')
-        compliance_type = clean(license_data.get('compliance_type')) or 'N'
-        add_line('DDA', compliance_type)
-
-        # Card revision date - DDB (default WA baseline 2019-11-12)
-        card_revision_raw = license_data.get('card_revision_date', '2019-11-12')
-        add_line('DDB', self.formatter.format_date(card_revision_raw))
-
-        # Weight (pounds) - DAW
-        weight_value = self.formatter.format_weight(
-            license_data.get('weight_pounds') or license_data.get('weight')
-        )
-        if weight_value:
-            add_line('DAW', weight_value)
-
-        if license_data.get('under_21_until'):
-            add_line('DDJ', self.formatter.format_date(license_data['under_21_until']))
-
-        if 'organ_donor' in license_data:
-            donor_code = '1' if license_data.get('organ_donor') else '0'
-            add_line('DDK', donor_code)
-
-        if 'veteran' in license_data:
-            veteran_code = '1' if license_data['veteran'] else '0'
-            add_line('DDL', veteran_code)
-
-        # Assemble without leading separator so subfile data begins immediately after header
-        return LF.join(lines) + LF
-    
-    def _build_data_element(self, element_id: str, value: str) -> str:
-        """Build a data element in AAMVA format."""
-        return f"{element_id}{value}"
-    
-    def validate_data(self, license_data: Dict) -> tuple[bool, list]:
-        """
-        Validate that all required fields are present.
-        
         Returns:
             Tuple of (is_valid, list_of_errors)
         """
@@ -384,45 +256,231 @@ class AAMVAPDF417Generator:
             'address_zip',
             'document_discriminator',
         ]
-        
+
         errors = []
+        profile = None
+        try:
+            profile = self._resolve_profile(license_data)
+        except ValueError as e:
+            errors.append(str(e))
+
         for field in required_fields:
             if field not in license_data or not license_data[field]:
                 errors.append(f"Missing required field: {field}")
-        
+
+        if profile is not None:
+            for field in profile.mandatory_fields:
+                if not license_data.get(field):
+                    errors.append(f"Missing required field for {profile.state}: {field}")
+
         # Validate date formats
         date_fields = ['birth_date', 'expiration_date']
         if 'issue_date' in license_data:
             date_fields.append('issue_date')
-        
+
         for field in date_fields:
             if field in license_data:
                 try:
                     self.formatter.format_date(license_data[field])
                 except ValueError as e:
                     errors.append(f"Invalid {field}: {str(e)}")
-        
+
         return len(errors) == 0, errors
 
+    # ------------------------------------------------------------------ #
+    # Internals
+    # ------------------------------------------------------------------ #
+    def _resolve_profile(self, license_data: Dict) -> JurisdictionProfile:
+        if self.profile is not None:
+            return self.profile
+        state = license_data.get('state') or license_data.get('address_state') \
+            or license_data.get('jurisdiction_code')
+        if not state:
+            raise ValueError("No state specified: set 'state' in the license data")
+        return get_profile(state)
 
-def create_wa_license_barcode(license_data: Dict) -> str:
+    def _build_subfile_body(self, profile: JurisdictionProfile,
+                            sf: SubFileSpec, license_data: Dict) -> str:
+        """Emit one subfile: '<TYPEID>' followed by its ordered elements,
+        separated by line feeds.  Ordering comes entirely from the profile."""
+        lines = [sf.type_id]
+        for element_id in sf.element_order:
+            value = self._compute_element(profile, sf, element_id, license_data)
+            if value is None or value == "":
+                continue
+            lines.append(f"{element_id}{value}")
+        return ELEMENT_DELIMITER.join(lines)
+
+    def _compute_element(self, profile: JurisdictionProfile, sf: SubFileSpec,
+                         element_id: str, license_data: Dict) -> Optional[str]:
+        """Resolve the value for one element id in one subfile."""
+        # Jurisdiction-specific subfiles (ZW/ZM/...): raw dict of element->text
+        extras_key = f"{sf.type_id.lower()}_elements"
+        if extras_key in license_data and element_id in license_data[extras_key]:
+            return str(license_data[extras_key][element_id])
+        if sf.type_id != "DL":
+            # Not enough research yet for this element in this subfile.
+            return None
+
+        clean = lambda v: None if v is None else str(v).strip().upper()
+        fmt = self.formatter
+
+        if element_id == 'DCA':
+            return clean(license_data.get('class')) or 'NONE'
+        if element_id == 'DCB':
+            return clean(license_data.get('restrictions')) or 'NONE'
+        if element_id in ('DCC', 'DCD'):
+            # Some states put endorsements in DCC, others (WA/MI) in DCD.
+            val = clean(license_data.get('endorsements'))
+            if val is None:
+                return None
+            return val or 'NONE'
+        if element_id == 'DBA':
+            return fmt.format_date(license_data['expiration_date'])
+        if element_id == 'DCS':
+            return clean(license_data.get('last_name'))
+        if element_id == 'DAC':
+            return clean(license_data.get('first_name'))
+        if element_id == 'DCT':
+            return clean(license_data.get('first_name'))
+        if element_id == 'DAD':
+            return clean(license_data.get('middle_name'))
+        if element_id in ('DAE', 'DCU'):
+            return clean(license_data.get('suffix'))
+        if element_id == 'DBD':
+            issue_date = license_data.get('issue_date')
+            return fmt.format_date(issue_date) if issue_date else None
+        if element_id == 'DBB':
+            return fmt.format_date(license_data['birth_date'])
+        if element_id == 'DBC':
+            return self.formatter.SEX_CODES.get(
+                (license_data.get('sex') or 'U').upper(), '9')
+        if element_id == 'DAY':
+            eye = clean(license_data.get('eye_color')) or 'UNK'
+            return fmt.EYE_COLOR_CODES.get(eye, eye)
+        if element_id == 'DAZ':
+            hair = clean(license_data.get('hair_color'))
+            return fmt.HAIR_COLOR_CODES.get(hair, hair) if hair else None
+        if element_id == 'DAU':
+            return fmt.format_height(license_data['height'])
+        if element_id == 'DAW':
+            return fmt.format_weight(
+                license_data.get('weight_pounds') or license_data.get('weight'))
+        if element_id == 'DAG':
+            return clean(license_data.get('address_street'))
+        if element_id == 'DAI':
+            return clean(license_data.get('address_city'))
+        if element_id == 'DAJ':
+            return clean(license_data.get('address_state'))
+        if element_id == 'DAK':
+            return fmt.format_zip(license_data['address_zip'])
+        if element_id == 'DAH':
+            return clean(license_data.get('mail_state'))
+        if element_id == 'DCF':
+            return clean(license_data.get('document_discriminator'))
+        if element_id == 'DCG':
+            return clean(license_data.get('country_id')) or 'USA'
+        if element_id == 'DCH':
+            return clean(license_data.get('jurisdiction_code_text'))
+        if element_id in ('DDE',):
+            return clean(license_data.get('jurisdiction_endorsement_expiration')) or 'N'
+        if element_id == 'DDF':
+            return clean(license_data.get('jurisdiction_endorsement_code')) or 'N'
+        if element_id == 'DDG':
+            return clean(license_data.get('jurisdiction_restriction_code')) or 'N'
+        if element_id == 'DCK':
+            # Audit information: customer_id + birthdate + expiration (MI style)
+            cust = clean(license_data.get('customer_id'))
+            if not cust:
+                return None
+            dob = fmt.format_date(license_data['birth_date'])
+            exp = fmt.format_date(license_data['expiration_date'])
+            return license_data.get('audit_information') or f"{cust}{dob}{exp}"
+        if element_id == 'DCJ':
+            dcj = clean(license_data.get('inventory_control'))
+            dd = clean(license_data.get('document_discriminator'))
+            if not dcj and dd:
+                lic = clean(license_data.get('customer_id'))
+                if lic and dd.startswith(lic):
+                    dcj = dd[len(lic):]
+                else:
+                    dcj = dd
+            return dcj
+        if element_id == 'DDA':
+            ct = clean(license_data.get('compliance_type')) or 'N'
+            # UI sends yes/no for REAL ID COMPLIANT dropdown
+            if ct in ('YES', 'TRUE'):
+                ct = 'R'
+            elif ct in ('NO', 'FALSE'):
+                ct = 'N'
+            return ct
+        if element_id == 'DDB':
+            default = profile.card_revision_default or '2019-11-12'
+            raw = license_data.get('card_revision_date', default)
+            return fmt.format_date(raw)
+        if element_id == 'DDJ':
+            u21 = license_data.get('under_21_until')
+            return fmt.format_date(u21) if u21 else None
+        if element_id == 'DDH':
+            u18 = license_data.get('under_18_until')
+            return fmt.format_date(u18) if u18 else None
+        if element_id == 'DDI':
+            u19 = license_data.get('under_19_until')
+            return fmt.format_date(u19) if u19 else None
+        if element_id == 'DDK':
+            if 'organ_donor' not in license_data:
+                return None
+            v = license_data.get('organ_donor')
+            b = v not in (False, 0, '0', 'NO', 'FALSE') if isinstance(v, str) else bool(v)
+            return '1' if b else '0'
+        if element_id == 'DDL':
+            if 'veteran' not in license_data:
+                return None
+            v = license_data.get('veteran')
+            b = v not in (False, 0, '0', 'NO', 'FALSE') if isinstance(v, str) else bool(v)
+            return '1' if b else '0'
+        if element_id in ('DCL',):
+            ln = clean(license_data.get('last_name'))
+            return fmt.truncate_name(ln) if ln and len(ln) > 35 else None
+        if element_id in ('DCM',):
+            fn = clean(license_data.get('first_name'))
+            return fmt.truncate_name(fn) if fn and len(fn) > 35 else None
+
+        # Unknown element -> allow raw pass-through via data key equal to id.
+        return clean(license_data.get(element_id))
+
+    def _build_data_element(self, element_id: str, value: str) -> str:
+        """Build a data element in AAMVA format."""
+        return f"{element_id}{value}"
+
+
+def create_license_barcode(license_data: Dict, state: Optional[str] = None) -> str:
     """
-    Convenience function to create a Washington state license barcode.
-    
+    Create a license barcode for any supported US jurisdiction.
+
     Args:
         license_data: Dictionary with license information
-        
+        state: Two-letter state code; overrides license_data['state'] if given
+
     Returns:
         Barcode data string ready for PDF417 encoding
     """
-    generator = AAMVAPDF417Generator()
-    
-    # Validate data
+    if state:
+        license_data = {**license_data, 'state': state}
+    profile = get_profile(license_data.get('state') or
+                          license_data.get('address_state') or '')
+    generator = AAMVAPDF417Generator(profile)
+
     is_valid, errors = generator.validate_data(license_data)
     if not is_valid:
         raise ValueError(f"Invalid license data: {', '.join(errors)}")
-    
+
     return generator.generate_barcode_data(license_data)
+
+
+def create_wa_license_barcode(license_data: Dict) -> str:
+    """Backwards-compatible wrapper: Washington license barcode."""
+    return create_license_barcode({**license_data, 'state': 'WA'})
 
 
 if __name__ == "__main__":
@@ -454,13 +512,18 @@ if __name__ == "__main__":
     }
     
     try:
-        barcode_data = create_wa_license_barcode(sample_license)
-        print("Barcode data generated successfully!")
-        print("\n" + "="*50)
-        print("BARCODE DATA:")
-        print("="*50)
+        barcode_data = create_license_barcode(sample_license, state='WA')
+        print("WA barcode data generated successfully!")
         print(barcode_data)
-        print("="*50)
-        print(f"\nTotal length: {len(barcode_data)} characters")
+
+        mi_sample = dict(sample_license)
+        mi_sample.update({
+            'address_state': 'MI', 'address_city': 'ROYAL OAK',
+            'address_zip': '48067', 'customer_id': 'P900000331783',
+            'zm_elements': {'ZMA': 'Rev 08-16-2021', 'ZMB': '01'},
+        })
+        mi_data = create_license_barcode(mi_sample, state='MI')
+        print("\nMI barcode (DL + ZM subfiles):")
+        print(repr(mi_data[:120]))
     except ValueError as e:
         print(f"Error: {e}")
