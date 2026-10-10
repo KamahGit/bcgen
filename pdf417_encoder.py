@@ -3,6 +3,8 @@ PDF417 Barcode Encoder
 Generates actual PDF417 barcode images from AAMVA data
 """
 
+from typing import Optional
+
 try:
     from pdf417 import encode, render_image
     PDF417_AVAILABLE = True
@@ -21,22 +23,36 @@ except ImportError:
 class PDF417Encoder:
     """
     Encodes AAMVA barcode data into PDF417 format and generates images.
-    Configured for Washington State (13 columns configured = 15 visible data columns).
+    Geometry (columns/rows/security level) and the Washington-only horizontal
+    flip are supplied per jurisdiction via a BarcodeConfig or explicit args —
+    nothing state-specific is baked in.
     """
-    
-    def __init__(self, security_level: int = 5, columns: int = 13):
+
+    def __init__(self, security_level: Optional[int] = None,
+                 columns: Optional[int] = None,
+                 rows: Optional[int] = None,
+                 flip_horizontal: Optional[bool] = None,
+                 config=None):
         """
         Initialize the encoder.
-        
+
         Args:
-            security_level: Error correction level (0-8), default 5 for driver's licenses
-            columns: Number of data columns (default 13 for WA - produces 15 visible columns)
+            security_level: Error correction level (0-8); from config if omitted
+            columns: Number of data columns; from config if omitted
+            rows: Number of rows hint (None = encoder decides); from config if omitted
+            flip_horizontal: Horizontally flip rendered image (Washington only)
+            config: states.BarcodeConfig instance — explicit args override it
         """
         if not PDF417_AVAILABLE:
             raise ImportError("pdf417 library is required. Install with: pip install pdf417")
-        
-        self.security_level = security_level
-        self.columns = columns
+
+        self.security_level = (security_level if security_level is not None
+                               else (config.security_level if config else 5))
+        self.columns = (columns if columns is not None
+                        else (config.columns if config else 13))
+        self.rows = rows if rows is not None else (config.rows if config else None)
+        self.flip_horizontal = (flip_horizontal if flip_horizontal is not None
+                                else (config.flip_horizontal if config else False))
     
     def encode_to_image(self, data: str, scale: int = 3, ratio: int = 3, width: int = None, height: int = None) -> Image:
         """
@@ -55,10 +71,11 @@ class PDF417Encoder:
         if not PIL_AVAILABLE:
             raise ImportError("Pillow library is required. Install with: pip install Pillow")
         
-        # Encode the data to PDF417
-        codes = encode(data, 
-                      columns=self.columns,
-                      security_level=self.security_level)
+        # Encode the data to PDF417 (per-state geometry from profile config)
+        kwargs = dict(columns=self.columns, security_level=self.security_level)
+        if self.rows:
+            kwargs["rows"] = self.rows
+        codes = encode(data, **kwargs)
         
         # Render to image
         image = render_image(codes, scale=scale, ratio=ratio, padding=10)
@@ -73,8 +90,10 @@ class PDF417Encoder:
                 # For older Pillow
                 image = image.resize((width, height), Image.LANCZOS)
         
-        # Horizontally flip the image
-        image = image.transpose(Image.FLIP_LEFT_RIGHT)
+        # Horizontal flip is jurisdiction-specific (Washington does it;
+        # other states do not).  Driven by BarcodeConfig.flip_horizontal.
+        if self.flip_horizontal:
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
 
         return image
     
@@ -108,10 +127,11 @@ class PDF417Encoder:
         except ImportError:
             raise ImportError("pdf417 SVG support not available")
         
-        codes = encode(data, 
-                      columns=self.columns,
-                      security_level=self.security_level)
-        
+        kwargs = dict(columns=self.columns, security_level=self.security_level)
+        if self.rows:
+            kwargs["rows"] = self.rows
+        codes = encode(data, **kwargs)
+
         svg_data = render_svg(codes, scale=3, ratio=3, padding=10)
         
         with open(output_path, 'w') as f:
@@ -120,17 +140,25 @@ class PDF417Encoder:
         print(f"SVG barcode saved to: {output_path}")
 
 
-def generate_barcode_image(barcode_data: str, output_path: str, 
-                          format: str = 'PNG') -> None:
+def encoder_for_state(state: str) -> "PDF417Encoder":
+    """Build an encoder pre-configured with a jurisdiction's barcode geometry."""
+    from states import get_profile
+    profile = get_profile(state)
+    return PDF417Encoder(config=profile.barcode)
+
+
+def generate_barcode_image(barcode_data: str, output_path: str,
+                          format: str = 'PNG', state: Optional[str] = None) -> None:
     """
     Convenience function to generate barcode image.
-    
+
     Args:
         barcode_data: AAMVA-formatted barcode data
         output_path: Where to save the image
         format: Output format ('PNG', 'SVG', 'JPEG')
+        state: Jurisdiction whose hardcoded PDF417 geometry should be used
     """
-    encoder = PDF417Encoder()
+    encoder = encoder_for_state(state) if state else PDF417Encoder()
     
     if format.upper() == 'SVG':
         encoder.encode_to_svg(barcode_data, output_path)
