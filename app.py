@@ -1,6 +1,10 @@
 """
 Flask Backend for AAMVA PDF417 Barcode Generator
-Provides REST API for generating Washington State driver's license barcodes
+Provides REST API for generating driver's license barcodes for all US states.
+
+v2.0.0-alpha.1 — multi-jurisdiction: every state-specific decision (DL element
+order, jurisdiction subfiles, PDF417 rows/columns, WA-only horizontal flip) is
+resolved from the JurisdictionProfile registry in the `states` package.
 """
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
@@ -11,8 +15,9 @@ from datetime import datetime
 import os
 import re
 
-from aamva_pdf417 import create_wa_license_barcode
+from aamva_pdf417 import create_license_barcode
 from pdf417_encoder import PDF417Encoder
+from states import get_profile, list_states, fields_as_dicts
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app)  # Enable CORS for frontend
@@ -22,9 +27,32 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 
 def normalize_license_data(data: dict) -> dict:
-    """Normalize incoming data to meet WA formatting expectations."""
+    """Normalize incoming data to meet AAMVA formatting expectations.
+
+    State-agnostic: the jurisdiction is taken from data['state'] (falling back
+    to address_state), and 'yes'/'no' UI values are mapped to AAMVA codes.
+    """
     if not isinstance(data, dict):
         return {}
+
+    # Resolve jurisdiction selector -> canonical state code
+    state = (data.get('state') or data.get('address_state') or '').strip().upper()
+    if state:
+        data['state'] = state
+        data['address_state'] = state
+
+    # Map UI yes/no dropdowns to AAMVA element values
+    compliance = str(data.get('compliance_type', '')).strip().upper()
+    if compliance == 'YES':
+        data['compliance_type'] = 'R'      # REAL ID compliant
+    elif compliance in ('NO', ''):
+        data['compliance_type'] = 'N'      # standard state license
+    else:
+        data['compliance_type'] = compliance  # raw code passthrough (R/E/B/F...)
+
+    for bool_field in ('organ_donor', 'veteran'):
+        if isinstance(data.get(bool_field), str) and data[bool_field].strip().lower() in ('yes', 'no'):
+            data[bool_field] = 'YES' if data[bool_field].strip().lower() == 'yes' else 'NO'
 
     uppercase_fields = {
         'customer_id', 'last_name', 'first_name', 'middle_name', 'suffix',
@@ -87,13 +115,22 @@ def index():
     return send_from_directory('.', 'index.html')
 
 
+@app.route('/api/states', methods=['GET'])
+def api_states():
+    """List every registered jurisdiction with its profile summary.
+
+    Used by the UI state selector dropdown and status badges.
+    """
+    return jsonify({'states': list_states()})
+
+
 @app.route('/api/generate', methods=['POST'])
 def generate_barcode():
     """
     Generate a PDF417 barcode from provided license data.
     
     Request Body:
-        JSON object with license data fields
+        JSON object with license data fields (must include 'state')
         
     Returns:
         JSON with barcode image (base64) or error message
@@ -105,6 +142,9 @@ def generate_barcode():
             return jsonify({'error': 'No data provided'}), 400
         
         data = normalize_license_data(dict(data))
+
+        if not data.get('state'):
+            return jsonify({'error': 'No state selected'}), 400
 
         # Validate required fields
         required_fields = [
@@ -121,12 +161,19 @@ def generate_barcode():
                 'missing': missing_fields
             }), 400
         
-        # Generate barcode data
-        barcode_data = create_wa_license_barcode(data)
+        # Resolve the jurisdiction profile (raises ValueError for unknown states)
+        profile = get_profile(data['state'])
+
+        # Generate barcode data (state-agnostic generator, profile-driven)
+        barcode_data = create_license_barcode(data)
         
-        # Encode to PDF417 image
-        encoder = PDF417Encoder()
-        image = encoder.encode_to_image(barcode_data, width=3430, height=603)
+        # Encode to PDF417 image using this state's hardcoded geometry
+        encoder = PDF417Encoder(config=profile.barcode)
+        image = encoder.encode_to_image(
+            barcode_data,
+            width=profile.barcode.image_width,
+            height=profile.barcode.image_height,
+        )
         
         # Save to buffer
         img_buffer = io.BytesIO()
@@ -140,6 +187,13 @@ def generate_barcode():
             'success': True,
             'image': f'data:image/png;base64,{img_base64}',
             'data_length': len(barcode_data),
+            'state': profile.state,
+            'barcode_config': {
+                'columns': profile.barcode.columns,
+                'rows': profile.barcode.rows,
+                'security_level': profile.barcode.security_level,
+                'flip_horizontal': profile.barcode.flip_horizontal,
+            },
             'generated_at': datetime.now().isoformat()
         })
         
@@ -167,13 +221,22 @@ def download_barcode():
             return jsonify({'error': 'No data provided'}), 400
 
         data = normalize_license_data(dict(data))
-        
+
+        if not data.get('state'):
+            return jsonify({'error': 'No state selected'}), 400
+
+        profile = get_profile(data['state'])
+
         # Generate barcode data
-        barcode_data = create_wa_license_barcode(data)
+        barcode_data = create_license_barcode(data)
         
-        # Encode to PDF417 image
-        encoder = PDF417Encoder()
-        image = encoder.encode_to_image(barcode_data, width=3430, height=603)
+        # Encode to PDF417 image using this state's hardcoded geometry
+        encoder = PDF417Encoder(config=profile.barcode)
+        image = encoder.encode_to_image(
+            barcode_data,
+            width=profile.barcode.image_width,
+            height=profile.barcode.image_height,
+        )
         
         # Save to buffer
         img_buffer = io.BytesIO()
@@ -183,7 +246,7 @@ def download_barcode():
         # Create filename from license number and timestamp
         license_num = data.get('customer_id', 'license')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'{license_num}_{timestamp}.png'
+        filename = f'{profile.state}_{license_num}_{timestamp}.png'
         
         return send_file(
             img_buffer,
@@ -216,6 +279,9 @@ def validate_data():
             return jsonify({'error': 'No data provided'}), 400
 
         data = normalize_license_data(dict(data))
+
+        if not data.get('state'):
+            return jsonify({'valid': False, 'error': 'No state selected'})
         
         # Required fields
         required_fields = [
@@ -235,10 +301,11 @@ def validate_data():
         
         # Try to generate (validates format)
         try:
-            barcode_data = create_wa_license_barcode(data)
+            barcode_data = create_license_barcode(data)
             return jsonify({
                 'valid': True,
-                'data_length': len(barcode_data)
+                'data_length': len(barcode_data),
+                'state': data['state']
             })
         except ValueError as e:
             return jsonify({
@@ -254,118 +321,27 @@ def validate_data():
 def get_field_info():
     """
     Get information about available AAMVA fields.
-    
+
+    Query Params:
+        state (optional): two-letter code; when provided, the response is
+        tailored to that jurisdiction's profile (IIN, subfiles, geometry).
+
     Returns:
-        JSON with field definitions and examples
+        JSON with shared field schema plus per-state profile info.
     """
-    fields = {
-        'required': {
-            'customer_id': {
-                'label': 'License Number',
-                'example': 'WDL123456789',
-                'description': 'Unique driver license number'
-            },
-            'last_name': {
-                'label': 'Last Name',
-                'example': 'SMITH',
-                'description': 'Family name (uppercase)'
-            },
-            'first_name': {
-                'label': 'First Name',
-                'example': 'JOHN',
-                'description': 'Given name (uppercase)'
-            },
-            'birth_date': {
-                'label': 'Birth Date',
-                'example': '1985-03-15',
-                'description': 'Date of birth (YYYY-MM-DD)'
-            },
-            'sex': {
-                'label': 'Sex',
-                'example': 'M',
-                'description': 'M (Male) or F (Female)'
-            },
-            'eye_color': {
-                'label': 'Eye Color',
-                'example': 'BRO',
-                'description': 'BLK, BLU, BRO, GRY, GRN, HAZ, etc.'
-            },
-            'height': {
-                'label': 'Height',
-                'example': '5-10',
-                'description': "Feet-inches (5-10) or inches (70)"
-            },
-            'address_street': {
-                'label': 'Street Address',
-                'example': '123 MAIN ST',
-                'description': 'Street address'
-            },
-            'address_city': {
-                'label': 'City',
-                'example': 'SEATTLE',
-                'description': 'City name'
-            },
-            'address_state': {
-                'label': 'State',
-                'example': 'WA',
-                'description': 'Two-letter state code'
-            },
-            'address_zip': {
-                'label': 'ZIP Code',
-                'example': '98101',
-                'description': '5-digit ZIP code'
-            },
-            'expiration_date': {
-                'label': 'Expiration Date',
-                'example': '2028-03-15',
-                'description': 'License expiration (YYYY-MM-DD)'
-            },
-            'issue_date': {
-                'label': 'Issue Date',
-                'example': '2024-03-15',
-                'description': 'License issue date (YYYY-MM-DD)'
-            },
-            'document_discriminator': {
-                'label': 'Document Discriminator',
-                'example': '12345678901234567890',
-                'description': 'Unique document identifier'
-            }
-        },
-        'optional': {
-            'middle_name': {
-                'label': 'Middle Name',
-                'example': 'ROBERT',
-                'description': 'Middle name or initial'
-            },
-            'class': {
-                'label': 'License Class',
-                'example': 'C',
-                'description': 'License class (A, B, C, etc.)'
-            },
-            'restrictions': {
-                'label': 'Restrictions',
-                'example': 'B',
-                'description': 'Restriction codes'
-            },
-            'endorsements': {
-                'label': 'Endorsements',
-                'example': 'NONE',
-                'description': 'Endorsement codes'
-            },
-            'hair_color': {
-                'label': 'Hair Color',
-                'example': 'BRO',
-                'description': 'Hair color code'
-            },
-            'weight': {
-                'label': 'Weight',
-                'example': '180',
-                'description': 'Weight in pounds'
-            }
-        }
-    }
-    
-    return jsonify(fields)
+    state = (request.args.get('state') or '').strip().upper() or None
+    payload = {'fields': fields_as_dicts()}
+
+    if state:
+        try:
+            profile = get_profile(state)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        payload['profile'] = next(
+            s for s in list_states() if s['state'] == profile.state
+        )
+
+    return jsonify(payload)
 
 
 @app.route('/api/health', methods=['GET'])
@@ -374,12 +350,12 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'AAMVA PDF417 Generator',
-        'version': '1.0.0',
+        'version': '2.0.0-alpha.1',
+        'jurisdictions': len(list_states()),
         'configuration': {
-            'columns': 13,  # configured (produces 15 visible data columns)
-            'visible_columns': 15,  # actual visible data columns
-            'error_correction': 5,
-            'jurisdiction': '636045',
+            'generator': 'state-agnostic (profile-driven)',
+            'researched_states': ['WA', 'MI'],
+            'default_geometry': {'columns': 13, 'rows': None, 'security_level': 5},
             'aamva_version': '09'
         }
     })
@@ -387,7 +363,7 @@ def health_check():
 
 if __name__ == '__main__':
     print("="*70)
-    print("AAMVA PDF417 Barcode Generator - Web Service")
+    print("AAMVA PDF417 Barcode Generator - Web Service (v2.0.0-alpha.1)")
     print("="*70)
     print()
     print("Starting server...")
@@ -395,10 +371,11 @@ if __name__ == '__main__':
     print()
     print("API Endpoints:")
     print("  GET  /                  - Web interface")
+    print("  GET  /api/states        - List all jurisdictions + profiles")
     print("  POST /api/generate      - Generate barcode (returns base64 image)")
     print("  POST /api/download      - Generate and download barcode")
     print("  POST /api/validate      - Validate license data")
-    print("  GET  /api/fields        - Get field information")
+    print("  GET  /api/fields        - Get field schema (?state=XX)")
     print("  GET  /api/health        - Health check")
     print()
     print("="*70)

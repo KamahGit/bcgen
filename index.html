@@ -478,10 +478,10 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>
-                🎫 WA STATE LICENSE BARCODE GENERATOR
+            <h1 id="appTitle">
+                🎫 US LICENSE BARCODE GENERATOR
             </h1>
-            <p class="subtitle" style="margin-left:70px;">Generate Flawless Washington State driver's license barcodes</p>
+            <p class="subtitle" style="margin-left:70px;" id="appSubtitle">Generate AAMVA-compliant driver's license barcodes for all 50 states + DC</p>
         </div>
 
         <div class="main-content">
@@ -490,6 +490,28 @@
                 <h2>📝 License Information</h2>
                 
                 <form id="licenseForm">
+                    <!-- Jurisdiction -->
+                    <div class="section">
+                        <div class="section-title">Jurisdiction</div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>State <span class="required">*</span></label>
+                                <select id="state" required>
+                                    <option value="">Loading states...</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>REAL ID COMPLIANT</label>
+                                <select id="compliance_type">
+                                    <option value="no">No — standard state license</option>
+                                    <option value="yes">Yes — REAL ID compliant</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="stateStatus" style="font-size:12px; color:var(--text-muted); letter-spacing:1px; margin-top:-6px;"></div>
+                    </div>
+
                     <!-- Personal Information -->
                     <div class="section">
                         <div class="section-title">Personal Information</div>
@@ -598,7 +620,8 @@
                             </div>
                             <div class="form-group">
                                 <label>State <span class="required">*</span></label>
-                                <input type="text" id="address_state" value="WA" required>
+                                <input type="text" id="address_state" value="WA" readonly required
+                                       title="Auto-synced from the jurisdiction selector">
                             </div>
                         </div>
 
@@ -657,10 +680,10 @@
             <div class="preview-panel panel">
                 <h2>👁️ Preview</h2>
                 
-                <div class="info-box">
-                    📊 Configuration: 15 data columns, 17 rows<br>
+                <div class="info-box" id="configInfo">
+                    📊 Configuration: — data columns, — rows<br>
                     ✅ AAMVA Version 9 (2016)<br>
-                    🏷️ Jurisdiction: 636045 (WA)
+                    🏷️ Jurisdiction: select a state to load its profile
                 </div>
 
                 <div class="barcode-preview" id="barcodePreview">
@@ -679,7 +702,7 @@
                         <div class="stat-label">Data Size</div>
                     </div>
                     <div class="stat">
-                        <div class="stat-value">15</div>
+                        <div class="stat-value" id="columnCount">-</div>
                         <div class="stat-label">Columns</div>
                     </div>
                 </div>
@@ -690,6 +713,7 @@
     <script>
         let currentBarcodeImage = null;
         let currentFormData = null;
+        let stateProfiles = [];   // loaded from /api/states
 
         const form = document.getElementById('licenseForm');
         const generateBtn = document.getElementById('generateBtn');
@@ -697,6 +721,93 @@
         const barcodePreview = document.getElementById('barcodePreview');
         const message = document.getElementById('message');
         const stats = document.getElementById('stats');
+        const stateSelect = document.getElementById('state');
+        const configInfo = document.getElementById('configInfo');
+        const stateStatus = document.getElementById('stateStatus');
+
+        // ------------------------------------------------------------------
+        // Jurisdiction loading (state dropdown driven by /api/states)
+        // ------------------------------------------------------------------
+        async function loadStates() {
+            try {
+                const response = await fetch('/api/states');
+                const result = await response.json();
+                stateProfiles = result.states || [];
+
+                stateSelect.innerHTML = '<option value="">Select state...</option>' +
+                    stateProfiles.map(s =>
+                        `<option value="${s.state}">${s.name} (${s.state})</option>`
+                    ).join('');
+
+                // Default to WA (fully researched) if available
+                if (stateProfiles.some(s => s.state === 'WA')) {
+                    stateSelect.value = 'WA';
+                    applyStateProfile();
+                }
+            } catch (error) {
+                stateSelect.innerHTML = '<option value="WA">Washington (WA)</option>';
+                stateSelect.value = 'WA';
+                applyStateProfile();
+            }
+        }
+
+        function profileFor(stateCode) {
+            return stateProfiles.find(s => s.state === stateCode) || null;
+        }
+
+        function applyStateProfile() {
+            const code = stateSelect.value;
+            const profile = profileFor(code);
+
+            // Sync address_state with jurisdiction selector
+            const addrState = document.getElementById('address_state');
+            if (code) addrState.value = code.toUpperCase();
+
+            if (!profile) {
+                document.getElementById('appTitle').textContent = '🎫 US LICENSE BARCODE GENERATOR';
+                document.getElementById('appSubtitle').textContent =
+                    "Generate AAMVA-compliant driver's license barcodes for all 50 states + DC";
+                configInfo.innerHTML =
+                    '📊 Configuration: — data columns, — rows<br>' +
+                    '✅ AAMVA Version 9 (2016)<br>' +
+                    '🏷️ Jurisdiction: select a state to load its profile';
+                stateStatus.textContent = '';
+                return;
+            }
+
+            document.getElementById('appTitle').textContent =
+                `🎫 ${profile.name.toUpperCase()} LICENSE BARCODE GENERATOR`;
+            document.getElementById('appSubtitle').textContent =
+                `Generate AAMVA-compliant ${profile.name} driver's license barcodes`;
+
+            const bc = profile.barcode || {};
+            const flipNote = bc.flip_horizontal ? ' · horizontal flip' : '';
+            configInfo.innerHTML =
+                `📊 Configuration: ${bc.columns || '?'} columns, ` +
+                `${bc.rows == null ? 'auto' : bc.rows} rows${flipNote}<br>` +
+                `✅ AAMVA Version ${parseInt(profile.aamva_version, 10) || profile.aamva_version} · ` +
+                `EC level ${bc.security_level ?? '?'}` +
+                ` (REAL ID variant pending research)<br>` +
+                `🏷️ Jurisdiction: ${profile.iin} (${profile.state})` +
+                (profile.subfiles && profile.subfiles.length > 1
+                    ? ` · Subfiles: ${profile.subfiles.join(', ')}` : '');
+
+            if (profile.status === 'draft') {
+                stateStatus.innerHTML =
+                    '⚠️ DRAFT PROFILE — generic DL element order & default geometry. ' +
+                    'State-specific research pending (see notes below).';
+                if (profile.notes) {
+                    stateStatus.innerHTML += `<br><span style="opacity:.7">${profile.notes}</span>`;
+                }
+            } else {
+                stateStatus.innerHTML =
+                    `✔ RESEARCHED PROFILE — verified DL order${profile.subfiles?.length > 1 ? ' + ' + profile.subfiles.filter(t => t !== 'DL').join('/') + ' subfile' : ''}.`;
+            }
+
+            document.getElementById('columnCount').textContent = bc.columns || '-';
+        }
+
+        stateSelect.addEventListener('change', applyStateProfile);
 
         // Set default dates
         const today = new Date();
@@ -705,6 +816,8 @@
         
         document.getElementById('issue_date').valueAsDate = today;
         document.getElementById('expiration_date').valueAsDate = fiveYearsFromNow;
+
+        loadStates();
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -814,16 +927,16 @@
 
         function getFormData() {
             const fields = [
-                'customer_id', 'first_name', 'last_name', 'middle_name',
+                'state', 'customer_id', 'first_name', 'last_name', 'middle_name',
                 'birth_date', 'sex', 'eye_color', 'hair_color',
                 'height', 'weight', 'address_street', 'address_city',
                 'address_state', 'address_zip', 'class', 'restrictions',
                 'endorsements', 'issue_date', 'expiration_date',
-                'document_discriminator'
+                'compliance_type', 'document_discriminator'
             ];
 
             const uppercaseFields = new Set([
-                'customer_id', 'first_name', 'last_name', 'middle_name', 'sex',
+                'state', 'customer_id', 'first_name', 'last_name', 'middle_name', 'sex',
                 'eye_color', 'hair_color', 'address_street', 'address_city',
                 'address_state', 'class', 'restrictions', 'endorsements',
                 'document_discriminator'
@@ -851,6 +964,8 @@
                     return;
                 }
 
+                // compliance_type stays as 'yes'/'no' — backend maps to DDA R/N
+
                 if (field === 'height') {
                     let heightValue = value.toUpperCase();
                     heightValue = heightValue.replace('FEET', '').replace('FT', '');
@@ -863,12 +978,12 @@
                 data[field] = value;
             });
 
-            // WA defaults to ensure compliant output when fields are omitted
+            // Jurisdiction defaults to ensure compliant output when fields are omitted
             data.class = data.class || 'NONE';
             data.restrictions = data.restrictions || 'NONE';
             data.endorsements = data.endorsements || 'NONE';
             data.country_id = data.country_id || 'USA';
-            data.compliance_type = data.compliance_type || 'N';
+            data.compliance_type = data.compliance_type || 'no';   // backend maps no -> DDA=N, yes -> DDA=R
             data.jurisdiction_endorsement_code = data.jurisdiction_endorsement_code || 'N';
             data.jurisdiction_endorsement_expiration = data.jurisdiction_endorsement_expiration || 'N';
             data.jurisdiction_restriction_code = data.jurisdiction_restriction_code || 'N';
