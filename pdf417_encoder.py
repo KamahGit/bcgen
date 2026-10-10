@@ -4,6 +4,7 @@ Generates actual PDF417 barcode images from AAMVA data
 """
 
 from typing import Optional
+from xml.etree.ElementTree import tostring
 
 try:
     from pdf417 import encode, render_image
@@ -39,7 +40,8 @@ class PDF417Encoder:
         Args:
             security_level: Error correction level (0-8); from config if omitted
             columns: Number of data columns; from config if omitted
-            rows: Number of rows hint (None = encoder decides); from config if omitted
+            rows: Expected row count (documentation/verification only — the
+                  pdf417 library derives rows from columns + data length)
             flip_horizontal: Horizontally flip rendered image (Washington only)
             config: states.BarcodeConfig instance — explicit args override it
         """
@@ -71,12 +73,13 @@ class PDF417Encoder:
         if not PIL_AVAILABLE:
             raise ImportError("Pillow library is required. Install with: pip install Pillow")
         
-        # Encode the data to PDF417 (per-state geometry from profile config)
-        kwargs = dict(columns=self.columns, security_level=self.security_level)
-        if self.rows:
-            kwargs["rows"] = self.rows
-        codes = encode(data, **kwargs)
-        
+        # Encode the data to PDF417 (per-state geometry from profile config).
+        # NOTE: the pdf417 PyPI package's encode() only accepts columns and
+        # security_level — row count falls out of column count + data length.
+        # The profile's rows hint is therefore not passed to the encoder; it is
+        # kept on BarcodeConfig for documentation/verification only.
+        codes = encode(data, columns=self.columns, security_level=self.security_level)
+
         # Render to image
         image = render_image(codes, scale=scale, ratio=ratio, padding=10)
 
@@ -127,14 +130,20 @@ class PDF417Encoder:
         except ImportError:
             raise ImportError("pdf417 SVG support not available")
         
-        kwargs = dict(columns=self.columns, security_level=self.security_level)
-        if self.rows:
-            kwargs["rows"] = self.rows
-        codes = encode(data, **kwargs)
+        # pdf417.encode() supports columns/security_level only; rows is a
+        # documentation hint kept on the profile, never passed to the encoder.
+        codes = encode(data, columns=self.columns, security_level=self.security_level)
 
-        svg_data = render_svg(codes, scale=3, ratio=3, padding=10)
-        
-        with open(output_path, 'w') as f:
+        # render_svg() does not accept a padding kwarg (unlike render_image)
+        # and returns an xml.etree ElementTree, not a string.
+        svg_tree = render_svg(codes, scale=3, ratio=3)
+        if isinstance(svg_tree, str):
+            svg_data = svg_tree.encode('utf-8')
+        else:
+            root = svg_tree.getroot() if hasattr(svg_tree, 'getroot') else svg_tree
+            svg_data = tostring(root, encoding='unicode').encode('utf-8')
+
+        with open(output_path, 'wb') as f:
             f.write(svg_data)
         
         print(f"SVG barcode saved to: {output_path}")
