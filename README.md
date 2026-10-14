@@ -74,6 +74,22 @@ encoder = PDF417Encoder()
 encoder.save_barcode(barcode_data, 'license_barcode.png')
 ```
 
+#### Texas profile (initial sample-based support)
+
+The generator also exposes a Texas profile, based on the supplied synthetic
+Texas barcode sample:
+
+```python
+from aamva_pdf417 import create_tx_license_barcode
+
+barcode_data = create_tx_license_barcode(license_data)
+```
+
+This profile emits the `DL` and `ZT` subfiles and uses Texas-specific ZIP
+formatting. It maps `audit_information` to `DCK` and `race` to `DCL`, and emits
+the sample's fixed `ZTA=N` value. The web application and CLI still use the
+Washington convenience function; state selection there is not yet implemented.
+
 #### Decode a Barcode
 
 ```python

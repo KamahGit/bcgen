@@ -4,10 +4,13 @@ Unit tests for AAMVA PDF417 barcode generator
 
 import unittest
 from datetime import datetime
+from dataclasses import replace
 from aamva_pdf417 import (
     AAMVAPDF417Generator,
     AAMVADataFormatter,
-    create_wa_license_barcode
+    WA_PROFILE,
+    create_wa_license_barcode,
+    create_tx_license_barcode,
 )
 
 
@@ -133,6 +136,117 @@ class TestAAMVAPDF417Generator(unittest.TestCase):
         self.assertIn('DAC', barcode_data)  # First name
         self.assertIn('DBB', barcode_data)  # Birth date
         self.assertIn('DBA', barcode_data)  # Expiration date
+
+    def test_wa_header_and_subfile_order(self):
+        """Pin the current WA header and element order before profile refactoring."""
+        data = self.valid_license_data.copy()
+        data.update({
+            'hair_color': 'BRO',
+            'weight_pounds': '175',
+            'organ_donor': True,
+            'veteran': False,
+            'class': 'C',
+            'restrictions': 'B',
+            'endorsements': 'NONE',
+        })
+
+        barcode_data = self.generator.generate_barcode_data(data)
+        header_start = barcode_data.index('ANSI ') + len('ANSI ')
+        header = barcode_data[header_start:header_start + 22]
+        self.assertEqual(header, '636045090001DL00310274')
+
+        subfile_data = self.generator._build_subfile_data(data, '\n')
+        element_ids = [
+            line[2:5] if line.startswith('DL') else line[:3]
+            for line in subfile_data.splitlines()
+        ]
+        self.assertEqual(element_ids, [
+            'DCA', 'DCB', 'DCD', 'DBA', 'DCS', 'DAC', 'DAD', 'DBD',
+            'DBB', 'DBC', 'DAY', 'DAZ', 'DAU', 'DAG', 'DAI', 'DAJ',
+            'DAK', 'DAQ', 'DCF', 'DCG', 'DDE', 'DDF', 'DDG', 'DCJ',
+            'DDA', 'DDB', 'DAW', 'DDK', 'DDL',
+        ])
+
+    def test_profile_configures_header_and_element_order(self):
+        profile = replace(
+            WA_PROFILE,
+            name='TEST',
+            jurisdiction_code='123456',
+            element_order=('DAQ', 'DCS', 'DAC'),
+            required_fields=('customer_id', 'last_name', 'first_name'),
+        )
+        generator = AAMVAPDF417Generator(profile)
+        data = self.valid_license_data.copy()
+        data['hair_color'] = 'BRO'
+        barcode_data = generator.generate_barcode_data(data)
+        self.assertEqual(
+            generator.validate_data({
+                'customer_id': 'TEST123',
+                'last_name': 'SMITH',
+                'first_name': 'JANE',
+            }),
+            (True, []),
+        )
+
+        header_start = barcode_data.index('ANSI ') + len('ANSI ')
+        header = barcode_data[header_start:header_start + 22]
+        self.assertEqual(header[:14], '123456090001DL')
+
+        subfile_data = generator._build_subfile_data(data, '\n')
+        element_ids = [
+            line[2:5] if line.startswith('DL') else line[:3]
+            for line in subfile_data.splitlines()
+        ]
+        self.assertEqual(element_ids, ['DAQ', 'DCS', 'DAC'])
+        self.assertNotIn('DAZ', element_ids)
+        self.assertEqual(
+            int(header[14:18]),
+            len(barcode_data) - len(subfile_data),
+        )
+        self.assertEqual(int(header[18:22]), len(subfile_data))
+
+    def test_texas_profile_matches_sample_header_order_and_subfiles(self):
+        data = {
+            'customer_id': '47136971',
+            'last_name': 'DUCK',
+            'first_name': 'DONALD',
+            'middle_name': 'MICHAEL',
+            'birth_date': '1996-07-13',
+            'expiration_date': '2029-07-13',
+            'issue_date': '2021-10-07',
+            'sex': 'M',
+            'eye_color': 'BRO',
+            'hair_color': 'BLK',
+            'height': '81',
+            'address_street': '1235 HARTSDALE DR APT 205',
+            'address_city': 'DALLAS',
+            'address_state': 'TX',
+            'address_zip': '75211-0000',
+            'document_discriminator': '42629181100007475796',
+            'audit_information': '10009788126',
+            'race': 'BKO',
+            'compliance_type': 'F',
+            'card_revision_date': '2020-02-23',
+            'weight_pounds': '270',
+            'class': 'C',
+        }
+        barcode_data = create_tx_license_barcode(data)
+
+        expected_dl_lines = [
+            'DLDCAC', 'DCBNONE', 'DCDNONE', 'DBA07132029', 'DCSDUCK',
+            'DDEN', 'DACDONALD', 'DDFN', 'DADMICHAEL', 'DDGN',
+            'DBD10072021', 'DBB07131996', 'DBC1', 'DAYBRO', 'DAU081 in',
+            'DAG1235 HARTSDALE DR APT 205', 'DAIDALLAS', 'DAJTX',
+            'DAK752110000', 'DAQ47136971', 'DCF42629181100007475796',
+            'DCGUSA', 'DAZBLK', 'DCK10009788126', 'DCLBKO', 'DDAF',
+            'DDB02232020', 'DAW270',
+        ]
+        expected = (
+            '@\n\x1e\rANSI 636015090002DL00410280ZT03210007'
+            + '\n'.join(expected_dl_lines)
+            + '\n\rZTZTAN\r'
+        )
+        self.assertEqual(barcode_data, expected)
     
     def test_generate_barcode_data_values(self):
         """Test that values are correctly included in barcode."""
@@ -219,6 +333,10 @@ class TestConvenienceFunction(unittest.TestCase):
         
         with self.assertRaises(ValueError):
             create_wa_license_barcode(invalid_data)
+
+    def test_create_tx_license_barcode_invalid(self):
+        with self.assertRaises(ValueError):
+            create_tx_license_barcode({'customer_id': 'TEST'})
 
 
 class TestEdgeCases(unittest.TestCase):

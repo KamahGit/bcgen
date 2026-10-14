@@ -1,10 +1,11 @@
 """
 AAMVA PDF417 Barcode Generator
 Compliant with AAMVA DL/ID Card Design Standard
-Specifically configured for Washington State Driver's Licenses
+Includes Washington and sample-based Texas driver-license profiles
 """
 
 from datetime import datetime
+from dataclasses import dataclass
 from typing import Dict, Optional
 import re
 
@@ -137,19 +138,19 @@ class AAMVADataFormatter:
         return name[:max_length] if len(name) > max_length else name
 
     @staticmethod
-    def format_zip(zip_code: str) -> str:
+    def format_zip(
+        zip_code: str,
+        padding_length: Optional[int] = 11,
+    ) -> str:
         """
-        Format ZIP code to AAMVA standard (11 characters, digits plus padding).
-        Accepts 5 or 9 digit ZIP (with or without separators).
+        Format a ZIP code as digits, optionally padding it to a fixed width.
         """
         digits = re.sub(r'\D', '', zip_code or '')
         if len(digits) < 5:
             raise ValueError(f"Invalid ZIP code: {zip_code}")
 
-        base = digits[:5]
-        extension = digits[5:9]
-        formatted = base + extension
-        return formatted.ljust(11)
+        formatted = digits[:9]
+        return formatted.ljust(padding_length) if padding_length is not None else formatted
 
     @staticmethod
     def format_weight(weight_value: Optional[str]) -> Optional[str]:
@@ -166,13 +167,103 @@ class AAMVADataFormatter:
             raise ValueError(f"Invalid weight: {weight_value}") from exc
 
 
+@dataclass(frozen=True)
+class AAMVAStateProfile:
+    """State-specific settings and supported element order for an AAMVA subfile."""
+
+    name: str
+    jurisdiction_code: str
+    aamva_version: str
+    element_order: tuple[str, ...]
+    required_fields: tuple[str, ...]
+    subfile_designator: str = 'DL'
+    jurisdiction_version: str = '00'
+    card_revision_date: Optional[str] = '2019-11-12'
+    subfile_terminator: str = '\r'
+    zip_padding_length: Optional[int] = 11
+    truncated_last_name_element: Optional[str] = 'DCL'
+    truncated_first_name_element: Optional[str] = 'DCM'
+    additional_element_fields: tuple[tuple[str, str], ...] = ()
+    additional_subfiles: tuple['AAMVAAdditionalSubfile', ...] = ()
+
+
+@dataclass(frozen=True)
+class AAMVAAdditionalSubfile:
+    """An additional jurisdiction-defined subfile and its static elements."""
+
+    designator: str
+    elements: tuple[tuple[str, str], ...]
+    terminator: str = '\r'
+
+    def render(self) -> str:
+        return self.designator + ''.join(
+            element_id + value for element_id, value in self.elements
+        ) + self.terminator
+
+
+WA_PROFILE = AAMVAStateProfile(
+    name='WA',
+    jurisdiction_code=AAMVADataFormatter.WA_JURISDICTION_CODE,
+    aamva_version=AAMVADataFormatter.AAMVA_VERSION,
+    element_order=(
+        'DCA', 'DCB', 'DCD', 'DBA', 'DCS', 'DAC', 'DAD', 'DCL', 'DCM',
+        'DCU', 'DBD', 'DBB', 'DBC', 'DAY', 'DAZ', 'DAU', 'DAG', 'DAI',
+        'DAJ', 'DAK', 'DAQ', 'DCF', 'DCG', 'DDE', 'DDF', 'DDG', 'DCJ',
+        'DDA', 'DDB', 'DAW', 'DDJ', 'DDK', 'DDL',
+    ),
+    required_fields=(
+        'customer_id',
+        'last_name',
+        'first_name',
+        'birth_date',
+        'expiration_date',
+        'sex',
+        'eye_color',
+        'height',
+        'address_street',
+        'address_city',
+        'address_state',
+        'address_zip',
+        'document_discriminator',
+    ),
+)
+
+TX_PROFILE = AAMVAStateProfile(
+    name='TX',
+    jurisdiction_code='636015',
+    aamva_version='09',
+    element_order=(
+        'DCA', 'DCB', 'DCD', 'DBA', 'DCS', 'DDE', 'DAC', 'DDF', 'DAD',
+        'DDG', 'DBD', 'DBB', 'DBC', 'DAY', 'DAU', 'DAG', 'DAI', 'DAJ',
+        'DAK', 'DAQ', 'DCF', 'DCG', 'DAZ', 'DCK', 'DCL', 'DDA', 'DDB',
+        'DAW',
+    ),
+    required_fields=WA_PROFILE.required_fields,
+    card_revision_date=None,
+    subfile_terminator='\n\r',
+    zip_padding_length=None,
+    truncated_last_name_element=None,
+    truncated_first_name_element=None,
+    additional_element_fields=(
+        ('audit_information', 'DCK'),
+        ('race', 'DCL'),
+    ),
+    additional_subfiles=(
+        AAMVAAdditionalSubfile(
+            designator='ZT',
+            elements=(('ZTA', 'N'),),
+        ),
+    ),
+)
+
+
 class AAMVAPDF417Generator:
     """
-    Generates AAMVA-compliant PDF417 barcode data for driver's licenses.
-    Specifically configured for Washington State.
+    Generates AAMVA PDF417 barcode data using a jurisdiction-specific profile.
     """
     
-    def __init__(self):
+    def __init__(self, profile: AAMVAStateProfile = WA_PROFILE):
+        self.profile = profile
         self.formatter = AAMVADataFormatter()
     
     def generate_barcode_data(self, license_data: Dict) -> str:
@@ -187,24 +278,41 @@ class AAMVAPDF417Generator:
         """
         LF = "\n"
         subfile_data = self._build_subfile_data(license_data, LF)
-        barcode_data = "@" + LF
-        barcode_data += "\x1e\r"
-        barcode_data += "ANSI "
-        jurisdiction_code = license_data.get('jurisdiction_code', self.formatter.WA_JURISDICTION_CODE)
-        barcode_data += jurisdiction_code
-        barcode_data += self.formatter.AAMVA_VERSION
-        jurisdiction_version = license_data.get('jurisdiction_version', '00')
-        barcode_data += jurisdiction_version.zfill(2)
-        barcode_data += f"{1:02d}"
-        barcode_data += "DL"
-        offset = len(barcode_data) + 8
-        barcode_data += f"{offset:04d}"
-        length = len(subfile_data)
-        barcode_data += f"{length:04d}"
-        barcode_data += subfile_data
-        # End with carriage return (no trailing LF)
-        barcode_data = barcode_data.rstrip("\n") + "\r"
-        return barcode_data
+        primary_data = (
+            subfile_data.rstrip(LF) + self.profile.subfile_terminator
+        )
+        subfiles = [
+            (self.profile.subfile_designator, primary_data),
+            *(
+                (subfile.designator, subfile.render())
+                for subfile in self.profile.additional_subfiles
+            ),
+        ]
+        barcode_header = "@" + LF
+        barcode_header += "\x1e\r"
+        barcode_header += "ANSI "
+        jurisdiction_code = license_data.get(
+            'jurisdiction_code', self.profile.jurisdiction_code
+        )
+        barcode_header += jurisdiction_code
+        barcode_header += self.profile.aamva_version
+        jurisdiction_version = license_data.get(
+            'jurisdiction_version', self.profile.jurisdiction_version
+        )
+        barcode_header += jurisdiction_version.zfill(2)
+        barcode_header += f"{len(subfiles):02d}"
+
+        next_offset = len(barcode_header) + 10 * len(subfiles)
+        directory = []
+        for designator, payload in subfiles:
+            directory.append(
+                f"{designator}{next_offset:04d}{len(payload):04d}"
+            )
+            next_offset += len(payload)
+
+        return barcode_header + ''.join(directory) + ''.join(
+            payload for _, payload in subfiles
+        )
     
     def _build_subfile_data(self, license_data: Dict, LF: str) -> str:
         """
@@ -218,6 +326,11 @@ class AAMVAPDF417Generator:
             Formatted subfile data string
         """
         lines = []
+        element_ids = []
+        element_order = {
+            element_id: index
+            for index, element_id in enumerate(self.profile.element_order)
+        }
 
         def clean(value: Optional[str]) -> Optional[str]:
             if value is None:
@@ -225,11 +338,12 @@ class AAMVAPDF417Generator:
             return str(value).strip().upper()
 
         def add_line(element_id: str, value: Optional[str], prefix: str = "") -> None:
-            if value is None or value == "":
+            if value is None or value == "" or element_id not in element_order:
                 return
             element = self._build_data_element(element_id, value)
             if prefix:
                 element = prefix + element
+            element_ids.append(element_id)
             lines.append(element)
 
         # Jurisdiction-specific class/restrictions/endorsements (with defaults)
@@ -258,10 +372,24 @@ class AAMVAPDF417Generator:
             middle_name = None
 
         # Truncated names if needed
-        if last_name and len(last_name) > 35:
-            add_line('DCL', self.formatter.truncate_name(last_name))
-        if first_name and len(first_name) > 35:
-            add_line('DCM', self.formatter.truncate_name(first_name))
+        if (
+            last_name
+            and len(last_name) > 35
+            and self.profile.truncated_last_name_element
+        ):
+            add_line(
+                self.profile.truncated_last_name_element,
+                self.formatter.truncate_name(last_name),
+            )
+        if (
+            first_name
+            and len(first_name) > 35
+            and self.profile.truncated_first_name_element
+        ):
+            add_line(
+                self.profile.truncated_first_name_element,
+                self.formatter.truncate_name(first_name),
+            )
         if license_data.get('suffix'):
             add_line('DCU', clean(license_data['suffix']))
 
@@ -296,7 +424,13 @@ class AAMVAPDF417Generator:
         add_line('DAG', clean(license_data.get('address_street')))
         add_line('DAI', clean(license_data.get('address_city')))
         add_line('DAJ', clean(license_data.get('address_state')))
-        add_line('DAK', self.formatter.format_zip(license_data['address_zip']))
+        add_line(
+            'DAK',
+            self.formatter.format_zip(
+                license_data['address_zip'],
+                self.profile.zip_padding_length,
+            ),
+        )
 
         # Customer ID - DAQ
         add_line('DAQ', clean(license_data.get('customer_id')))
@@ -308,6 +442,9 @@ class AAMVAPDF417Generator:
         # Country Identification - DCG
         country = clean(license_data.get('country_id')) or 'USA'
         add_line('DCG', country)
+
+        for field_name, element_id in self.profile.additional_element_fields:
+            add_line(element_id, clean(license_data.get(field_name)))
 
         # Jurisdiction-specific compliance flags (defaults to 'N')
         dde = clean(license_data.get('jurisdiction_endorsement_expiration')) or 'N'
@@ -334,8 +471,11 @@ class AAMVAPDF417Generator:
         add_line('DDA', compliance_type)
 
         # Card revision date - DDB (default WA baseline 2019-11-12)
-        card_revision_raw = license_data.get('card_revision_date', '2019-11-12')
-        add_line('DDB', self.formatter.format_date(card_revision_raw))
+        card_revision_raw = license_data.get(
+            'card_revision_date', self.profile.card_revision_date
+        )
+        if card_revision_raw is not None:
+            add_line('DDB', self.formatter.format_date(card_revision_raw))
 
         # Weight (pounds) - DAW
         weight_value = self.formatter.format_weight(
@@ -355,8 +495,16 @@ class AAMVAPDF417Generator:
             veteran_code = '1' if license_data['veteran'] else '0'
             add_line('DDL', veteran_code)
 
+        ordered_lines = [
+            line
+            for _, line in sorted(
+                zip(element_ids, lines),
+                key=lambda item: element_order[item[0]],
+            )
+        ]
+
         # Assemble without leading separator so subfile data begins immediately after header
-        return LF.join(lines) + LF
+        return LF.join(ordered_lines) + LF
     
     def _build_data_element(self, element_id: str, value: str) -> str:
         """Build a data element in AAMVA format."""
@@ -369,24 +517,8 @@ class AAMVAPDF417Generator:
         Returns:
             Tuple of (is_valid, list_of_errors)
         """
-        required_fields = [
-            'customer_id',
-            'last_name',
-            'first_name',
-            'birth_date',
-            'expiration_date',
-            'sex',
-            'eye_color',
-            'height',
-            'address_street',
-            'address_city',
-            'address_state',
-            'address_zip',
-            'document_discriminator',
-        ]
-        
         errors = []
-        for field in required_fields:
+        for field in self.profile.required_fields:
             if field not in license_data or not license_data[field]:
                 errors.append(f"Missing required field: {field}")
         
@@ -405,6 +537,18 @@ class AAMVAPDF417Generator:
         return len(errors) == 0, errors
 
 
+def create_license_barcode(
+    license_data: Dict,
+    profile: AAMVAStateProfile = WA_PROFILE,
+) -> str:
+    """Validate license data and create a barcode with the selected profile."""
+    generator = AAMVAPDF417Generator(profile)
+    is_valid, errors = generator.validate_data(license_data)
+    if not is_valid:
+        raise ValueError(f"Invalid license data: {', '.join(errors)}")
+    return generator.generate_barcode_data(license_data)
+
+
 def create_wa_license_barcode(license_data: Dict) -> str:
     """
     Convenience function to create a Washington state license barcode.
@@ -415,14 +559,12 @@ def create_wa_license_barcode(license_data: Dict) -> str:
     Returns:
         Barcode data string ready for PDF417 encoding
     """
-    generator = AAMVAPDF417Generator()
-    
-    # Validate data
-    is_valid, errors = generator.validate_data(license_data)
-    if not is_valid:
-        raise ValueError(f"Invalid license data: {', '.join(errors)}")
-    
-    return generator.generate_barcode_data(license_data)
+    return create_license_barcode(license_data, WA_PROFILE)
+
+
+def create_tx_license_barcode(license_data: Dict) -> str:
+    """Convenience function to create a Texas license barcode."""
+    return create_license_barcode(license_data, TX_PROFILE)
 
 
 if __name__ == "__main__":
